@@ -26,19 +26,16 @@ std::string UrlDecode(const std::string& value) {
 }
 
 int main() {
-    // 1. 시스템 초기화
     Logger::Init();
     ConfigManager cm;
-    spdlog::info("=== HIRA Helper Agent v2.7 (Strict Routing) Started ===");
+    spdlog::info("=== HIRA Helper Agent v2.9.2 (Robust Server) Started ===");
 
     Cleaner::Start(cm);
     std::filesystem::create_directories(cm.config.cache_root);
 
     crow::SimpleApp app;
 
-    // =========================================================
     // [Config Route]
-    // =========================================================
     CROW_ROUTE(app, "/config")([&]() {
         std::string html = CONFIG_HTML;
         auto replace = [&](std::string& str, const std::string& key, const std::string& val) {
@@ -83,7 +80,7 @@ int main() {
     });
 
     // =========================================================
-    // [PACS Route] Strict Routing (PacsShort/PacsLong Only)
+    // [PACS Route]
     // =========================================================
     CROW_ROUTE(app, "/pacs/download").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& req) {
@@ -94,28 +91,21 @@ int main() {
         std::string target_ip;
         std::string relative_path;
 
-        // [Strict Routing Logic]
-        // 1. PacsShort 확인 (Length 9)
         if (target.rfind("PacsShort", 0) == 0) { 
             target_ip = cm.config.nas_short_ip;
-            // "PacsShort\" 제거 (10번째 문자부터 시작)
             if (target.length() > 9) relative_path = target.substr(10);
             else relative_path = ""; 
         } 
-        // 2. PacsLong 확인 (Length 8)
         else if (target.rfind("PacsLong", 0) == 0) {
             target_ip = cm.config.nas_long_ip;
-            // "PacsLong\" 제거 (9번째 문자부터 시작)
             if (target.length() > 8) relative_path = target.substr(9);
             else relative_path = "";
         }
-        // 3. 접두사 불일치 시 -> Error 처리 (Default 로직 제거)
         else {
             spdlog::warn("[Req] Blocked Invalid Prefix: {}", target);
-            return crow::response(400, "Invalid Path Prefix: Must start with PacsShort\\ or PacsLong\\");
+            return crow::response(400, "Invalid Path Prefix");
         }
 
-        // UNC 경로 조립 (\\IP\Path)
         std::string unc_path = "\\\\" + target_ip + "\\" + relative_path;
         
         spdlog::info("[Req] NAS Download: {} -> UNC: {}", target, unc_path);
@@ -135,8 +125,8 @@ int main() {
         auto x = crow::json::load(req.body);
         if (!x || !x.has("target_path")) return crow::response(400, "Missing 'target_path'");
         std::string target = x["target_path"].s();
-        fs::path full_path = fs::path(cm.config.cache_root) / target;
-        if (StorageHandler::DeleteFolder(full_path.string())) {
+        fs::path full_path = fs::path(cm.config.cache_root) / target; // Note: This might need ToPath if user sends hangul, but usually english.
+        if (StorageHandler::DeleteFolder(full_path.string())) { // DeleteFolder handles ToPath inside
             crow::json::wvalue res;
             res["status"] = "deleted";
             return crow::response(200, res);
@@ -145,13 +135,13 @@ int main() {
     });
 
     // =========================================================
-    // [File Route] Upload (Fixed Header Parsing)
+    // [File Route] Upload (Fixed UTF8)
     // =========================================================
     CROW_ROUTE(app, "/file/upload").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& req) {
         crow::multipart::message msg(req);
         int saved_count = 0;
-        std::string upload_dir = (fs::path(cm.config.cache_root) / "Uploads").string();
+        std::string upload_dir = (fs::path(cm.config.cache_root) / "Uploads").string(); // Base path
 
         for (const auto& part : msg.parts) {
             if (!part.body.empty()) {
@@ -165,10 +155,11 @@ int main() {
                         if (raw_name.size() >= 2 && raw_name.front() == '"' && raw_name.back() == '"') {
                             raw_name = raw_name.substr(1, raw_name.size() - 2);
                         }
-                        std::string safe_filename = fs::path(raw_name).filename().string();
                         
-                        spdlog::info("[Req] File Upload: {} -> {}", raw_name, safe_filename);
-                        if (StorageHandler::SaveFileAtomic(upload_dir, safe_filename, part.body)) {
+                        // StorageHandler가 내부적으로 u8path 변환을 하므로 그대로 전달
+                        spdlog::info("[Req] File Upload: {}", raw_name);
+                        
+                        if (StorageHandler::SaveFileAtomic(upload_dir, raw_name, part.body)) {
                             saved_count++;
                         }
                     }
@@ -185,7 +176,7 @@ int main() {
     });
 
     // =========================================================
-    // [File Route] Download (Stream)
+    // [File Route] Download (Stream + UTF8 Fix)
     // =========================================================
     CROW_ROUTE(app, "/file/download").methods(crow::HTTPMethod::GET)
     ([&](const crow::request& req) {
@@ -194,7 +185,10 @@ int main() {
 
         std::string full_path;
         if (StorageHandler::GetFileForDownload(cm.config.cache_root, path_param, full_path)) {
-            std::ifstream file(full_path, std::ios::binary);
+            // full_path는 StorageHandler에서 PathToStr(u8string)로 변환된 UTF-8 문자열
+            
+            // 1. 파일 열기: ToPath로 다시 path 객체로 변환하여 엶 (Widows Unicode 지원)
+            std::ifstream file(StorageHandler::ToPath(full_path), std::ios::binary);
             if (!file.is_open()) return crow::response(500, "File open error");
 
             std::ostringstream ss;
@@ -204,7 +198,11 @@ int main() {
             res.code = 200;
             res.body = ss.str();
             res.set_header("Content-Type", "application/octet-stream");
-            res.set_header("Content-Disposition", "attachment; filename=\"" + fs::path(full_path).filename().string() + "\"");
+
+            // 2. 헤더 설정: UTF-8 문자열을 그대로 사용 (filename().string() 금지!)
+            // PathToStr를 사용하여 안전하게 UTF-8 문자열 추출
+            std::string filename_utf8 = StorageHandler::PathToStr(StorageHandler::ToPath(full_path).filename());
+            res.set_header("Content-Disposition", "attachment; filename=\"" + filename_utf8 + "\"");
             
             spdlog::info("[Req] File Download: {} ({} bytes)", full_path, res.body.size());
             return res;

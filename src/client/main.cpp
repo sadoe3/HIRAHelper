@@ -5,13 +5,17 @@
 #include <cpr/cpr.h>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+#include <windows.h> 
+
+#define _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING
 
 using json = nlohmann::json;
-
-// Phase 3 적용: HTTPS (IIS Proxy)
 const std::string AGENT_URL = "https://localhost";
 
-// [Helper] 윈도우 경로 따옴표 제거
+// ---------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------
+
 std::string RemoveQuotes(std::string path) {
     if (path.size() >= 2 && path.front() == '"' && path.back() == '"') {
         return path.substr(1, path.size() - 2);
@@ -19,11 +23,23 @@ std::string RemoveQuotes(std::string path) {
     return path;
 }
 
-// 1. NAS 폴더 다운로드
+std::filesystem::path ToPath(const std::string& utf8_str) {
+    return std::filesystem::u8path(utf8_str);
+}
+
+std::string PathToStr(const std::filesystem::path& p) {
+    std::u8string u8 = p.u8string();
+    return std::string(reinterpret_cast<const char*>(u8.c_str()));
+}
+
+// ---------------------------------------------------------
+// Features
+// ---------------------------------------------------------
+
 void TestDownload() {
     std::string target;
-    // Strict Routing 적용: 반드시 PacsShort 또는 PacsLong으로 시작해야 함
     std::cout << "\n[Input] Enter NAS Path (e.g. PacsShort\\Study01\\Series001): ";
+    
     std::cin.ignore(); 
     std::getline(std::cin, target);
     target = RemoveQuotes(target);
@@ -31,7 +47,8 @@ void TestDownload() {
     json body;
     body["target_path"] = target;
 
-    spdlog::info("Sending NAS Download Request...");
+    spdlog::info("Sending NAS Download Request: {}", target);
+    
     auto r = cpr::Post(cpr::Url{AGENT_URL + "/pacs/download"},
                        cpr::Body{body.dump()},
                        cpr::Header{{"Content-Type", "application/json"}},
@@ -41,16 +58,20 @@ void TestDownload() {
     spdlog::info("Response: {}", r.text);
 }
 
-// 2. 로컬 폴더 삭제
 void TestDelete() {
     std::string target;
     std::cout << "\n[Input] Enter Folder Name to Delete (e.g. Series001): ";
-    std::cin >> target; 
+    
+    // [Fix] 공백 포함 경로 지원을 위해 getline 사용
+    std::cin.ignore();
+    std::getline(std::cin, target);
+    target = RemoveQuotes(target);
 
     json body;
     body["target_path"] = target;
 
-    spdlog::info("Sending Delete Request...");
+    spdlog::info("Sending Delete Request: {}", target);
+    
     auto r = cpr::Post(cpr::Url{AGENT_URL + "/pacs/delete"},
                        cpr::Body{body.dump()},
                        cpr::Header{{"Content-Type", "application/json"}},
@@ -60,17 +81,18 @@ void TestDelete() {
     spdlog::info("Response: {}", r.text);
 }
 
-// 3. 파일 업로드
 void TestFileUpload() {
-    std::string file_path;
+    std::string file_path_str;
     std::cout << "\n[Input] Enter Local File Path to Upload: ";
     
     std::cin.ignore();
-    std::getline(std::cin, file_path);
-    file_path = RemoveQuotes(file_path);
+    std::getline(std::cin, file_path_str);
+    file_path_str = RemoveQuotes(file_path_str);
+    
+    std::filesystem::path file_path = ToPath(file_path_str);
 
     if (!std::filesystem::exists(file_path)) {
-        spdlog::error("[Debug] File NOT found: {}", file_path);
+        spdlog::error("[Error] File NOT found: {}", PathToStr(file_path));
         return;
     }
 
@@ -81,10 +103,11 @@ void TestFileUpload() {
         f.close();
     }
 
-    spdlog::info("Uploading {}...", file_path);
+    std::string safe_path = PathToStr(file_path);
+    spdlog::info("Uploading {}...", safe_path);
 
     cpr::Multipart multipart_data{};
-    multipart_data.parts.push_back({"file", cpr::File(file_path)});
+    multipart_data.parts.push_back({"file", cpr::File(safe_path)});
 
     auto r = cpr::Post(cpr::Url{AGENT_URL + "/file/upload"},
                        multipart_data,
@@ -94,35 +117,38 @@ void TestFileUpload() {
     spdlog::info("Response: {}", r.text);
 }
 
-// 4. 파일 다운로드 (디렉토리 지원)
 void TestFileDownload() {
     std::string target_path;
-    std::cout << "\n[Input] Enter Relative Path (e.g. Uploads\\test.jpg): ";
-    std::cin >> target_path; 
+    std::cout << "\n[Input] Enter Relative Path (e.g. Uploads\\제목 없음.png): ";
+    
+    // [Fix] cin >> 대신 getline 사용 (공백 문제 해결)
+    // 앞선 메뉴 선택의 엔터키가 버퍼에 있으므로 ignore() 호출 필요
+    std::cin.ignore(); 
+    std::getline(std::cin, target_path);
+    target_path = RemoveQuotes(target_path);
 
-    // 저장 경로 입력받기
     std::string user_input;
     std::cout << "[Input] Enter Save Path (Folder or File) [Default: Current Dir]: ";
-    std::cin.ignore();
+    
+    // [Fix] 여기서는 ignore 불필요 (위의 getline이 버퍼를 비워줌)
     std::getline(std::cin, user_input);
     user_input = RemoveQuotes(user_input);
 
-    std::string final_save_path;
+    std::filesystem::path final_save_path;
     
     if (user_input.empty()) {
-        final_save_path = "Downloaded_" + std::filesystem::path(target_path).filename().string();
+        final_save_path = std::filesystem::path("Downloaded_") += ToPath(target_path).filename();
     } else {
-        std::filesystem::path p(user_input);
+        std::filesystem::path p = ToPath(user_input);
         if (std::filesystem::is_directory(p)) {
-            // 폴더 입력 시 파일명 자동 추가
-            final_save_path = (p / std::filesystem::path(target_path).filename()).string();
+            final_save_path = p / ToPath(target_path).filename();
         } else {
-            // 파일명 입력 시 그대로 사용
-            final_save_path = user_input;
+            final_save_path = p;
         }
     }
 
-    spdlog::info("Downloading {} -> {} ...", target_path, final_save_path);
+    std::string final_path_str = PathToStr(final_save_path);
+    spdlog::info("Downloading {} -> {} ...", target_path, final_path_str);
 
     auto r = cpr::Get(cpr::Url{AGENT_URL + "/file/download"},
                       cpr::Parameters{{"path", target_path}},
@@ -133,10 +159,10 @@ void TestFileDownload() {
         if (out.is_open()) {
             out << r.text;
             out.close();
-            spdlog::info("Success! Saved to: {}", final_save_path);
+            spdlog::info("Success! Saved to: {}", final_path_str);
             spdlog::info("Size: {} bytes", r.text.size());
         } else {
-            spdlog::error("Failed to open save path: {}", final_save_path);
+            spdlog::error("Failed to open save path: {}", final_path_str);
         }
     } else {
         spdlog::error("Failed. Status: {}", r.status_code);
@@ -145,14 +171,17 @@ void TestFileDownload() {
 }
 
 int main() {
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+
     spdlog::set_pattern("%^[%L] %v%$");
     
     while(true) {
-        std::cout << "\n=== HIRA Helper Client v2.5 (Final) ===\n";
-        std::cout << "1. PACS: Download Folder (NAS -> Local)\n";
+        std::cout << "\n=== HIRA Helper Client v2.9.2 (Space Support) ===\n";
+        std::cout << "1. PACS: Download Folder\n";
         std::cout << "2. PACS: Delete Folder\n";
-        std::cout << "3. FILE: Upload File (Local -> Server)\n";
-        std::cout << "4. FILE: Download File (Server -> Local)\n";
+        std::cout << "3. FILE: Upload File\n";
+        std::cout << "4. FILE: Download File\n";
         std::cout << "0. Exit\n";
         std::cout << "Select: ";
         
