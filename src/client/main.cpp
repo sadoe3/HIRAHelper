@@ -5,7 +5,9 @@
 #include <spdlog/spdlog.h>
 
 using json = nlohmann::json;
-const std::string AGENT_URL = "http://localhost:8080";
+
+// [수정 1] HTTPS 프로토콜 사용 (포트 443은 생략 가능)
+const std::string AGENT_URL = "https://localhost";
 
 void TestDownload() {
     std::string target;
@@ -16,9 +18,12 @@ void TestDownload() {
     body["target_path"] = target;
 
     spdlog::info("Sending Download Request...");
+    
+    // [수정 2] VerifySsl{false} 옵션 추가 (사설 인증서 에러 무시)
     auto r = cpr::Post(cpr::Url{AGENT_URL + "/pacs/download"},
                        cpr::Body{body.dump()},
-                       cpr::Header{{"Content-Type", "application/json"}});
+                       cpr::Header{{"Content-Type", "application/json"}},
+                       cpr::VerifySsl{false}); 
 
     spdlog::info("Status: {}", r.status_code);
     spdlog::info("Response: {}", r.text);
@@ -33,19 +38,22 @@ void TestDelete() {
     body["target_path"] = target;
 
     spdlog::info("Sending Delete Request...");
+    
+    // [수정 3] VerifySsl{false} 옵션 추가
     auto r = cpr::Post(cpr::Url{AGENT_URL + "/pacs/delete"},
                        cpr::Body{body.dump()},
-                       cpr::Header{{"Content-Type", "application/json"}});
+                       cpr::Header{{"Content-Type", "application/json"}},
+                       cpr::VerifySsl{false}); 
 
     spdlog::info("Status: {}", r.status_code);
     spdlog::info("Response: {}", r.text);
 }
 
 int main() {
-    spdlog::set_pattern("%^[%L] %v%$"); // 로그 포맷 간소화
+    spdlog::set_pattern("%^[%L] %v%$");
     
     while(true) {
-        std::cout << "\n=== HIRA Test Client ===\n";
+        std::cout << "\n=== HIRA Test Client (HTTPS) ===\n";
         std::cout << "1. Download Folder (NAS -> Local)\n";
         std::cout << "2. Delete Folder (Local)\n";
         std::cout << "0. Exit\n";
