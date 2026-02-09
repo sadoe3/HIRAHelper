@@ -26,16 +26,19 @@ std::string UrlDecode(const std::string& value) {
 }
 
 int main() {
+    // 1. 시스템 초기화
     Logger::Init();
     ConfigManager cm;
-    spdlog::info("=== HIRA Helper Agent v2.3 (Final) Started ===");
+    spdlog::info("=== HIRA Helper Agent v2.7 (Strict Routing) Started ===");
 
     Cleaner::Start(cm);
     std::filesystem::create_directories(cm.config.cache_root);
 
     crow::SimpleApp app;
 
+    // =========================================================
     // [Config Route]
+    // =========================================================
     CROW_ROUTE(app, "/config")([&]() {
         std::string html = CONFIG_HTML;
         auto replace = [&](std::string& str, const std::string& key, const std::string& val) {
@@ -79,14 +82,44 @@ int main() {
         return crow::response(200, "<h1>Saved!</h1><p>Restart required.</p><a href='/config'>Back</a>");
     });
 
-    // [PACS Route]
+    // =========================================================
+    // [PACS Route] Strict Routing (PacsShort/PacsLong Only)
+    // =========================================================
     CROW_ROUTE(app, "/pacs/download").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& req) {
         auto x = crow::json::load(req.body);
         if (!x || !x.has("target_path")) return crow::response(400, "Invalid JSON");
+        
         std::string target = x["target_path"].s();
-        std::string unc_path = "\\\\" + cm.config.nas_short_ip + "\\" + target;
-        spdlog::info("[Req] NAS Download: {}", unc_path);
+        std::string target_ip;
+        std::string relative_path;
+
+        // [Strict Routing Logic]
+        // 1. PacsShort 확인 (Length 9)
+        if (target.rfind("PacsShort", 0) == 0) { 
+            target_ip = cm.config.nas_short_ip;
+            // "PacsShort\" 제거 (10번째 문자부터 시작)
+            if (target.length() > 9) relative_path = target.substr(10);
+            else relative_path = ""; 
+        } 
+        // 2. PacsLong 확인 (Length 8)
+        else if (target.rfind("PacsLong", 0) == 0) {
+            target_ip = cm.config.nas_long_ip;
+            // "PacsLong\" 제거 (9번째 문자부터 시작)
+            if (target.length() > 8) relative_path = target.substr(9);
+            else relative_path = "";
+        }
+        // 3. 접두사 불일치 시 -> Error 처리 (Default 로직 제거)
+        else {
+            spdlog::warn("[Req] Blocked Invalid Prefix: {}", target);
+            return crow::response(400, "Invalid Path Prefix: Must start with PacsShort\\ or PacsLong\\");
+        }
+
+        // UNC 경로 조립 (\\IP\Path)
+        std::string unc_path = "\\\\" + target_ip + "\\" + relative_path;
+        
+        spdlog::info("[Req] NAS Download: {} -> UNC: {}", target, unc_path);
+        
         std::string local_path;
         if (StorageHandler::DownloadFolder(unc_path, cm.config.cache_root, local_path)) {
             crow::json::wvalue res;
@@ -111,8 +144,9 @@ int main() {
         return crow::response(404, "Folder not found");
     });
 
-    // [File Route]
-    // 1. Upload (Fixed Header Parsing)
+    // =========================================================
+    // [File Route] Upload (Fixed Header Parsing)
+    // =========================================================
     CROW_ROUTE(app, "/file/upload").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& req) {
         crow::multipart::message msg(req);
@@ -150,7 +184,9 @@ int main() {
         return crow::response(400, "No valid files found");
     });
 
-    // 2. Download (Fixed Stream Response)
+    // =========================================================
+    // [File Route] Download (Stream)
+    // =========================================================
     CROW_ROUTE(app, "/file/download").methods(crow::HTTPMethod::GET)
     ([&](const crow::request& req) {
         auto path_param = req.url_params.get("path");
@@ -158,7 +194,6 @@ int main() {
 
         std::string full_path;
         if (StorageHandler::GetFileForDownload(cm.config.cache_root, path_param, full_path)) {
-            // 수동 스트림 전송
             std::ifstream file(full_path, std::ios::binary);
             if (!file.is_open()) return crow::response(500, "File open error");
 

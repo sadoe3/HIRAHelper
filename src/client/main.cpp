@@ -22,6 +22,7 @@ std::string RemoveQuotes(std::string path) {
 // 1. NAS 폴더 다운로드
 void TestDownload() {
     std::string target;
+    // Strict Routing 적용: 반드시 PacsShort 또는 PacsLong으로 시작해야 함
     std::cout << "\n[Input] Enter NAS Path (e.g. PacsShort\\Study01\\Series001): ";
     std::cin.ignore(); 
     std::getline(std::cin, target);
@@ -93,7 +94,7 @@ void TestFileUpload() {
     spdlog::info("Response: {}", r.text);
 }
 
-// 4. 파일 다운로드 (디렉토리 지원 수정)
+// 4. 파일 다운로드 (디렉토리 지원)
 void TestFileDownload() {
     std::string target_path;
     std::cout << "\n[Input] Enter Relative Path (e.g. Uploads\\test.jpg): ";
@@ -106,19 +107,17 @@ void TestFileDownload() {
     std::getline(std::cin, user_input);
     user_input = RemoveQuotes(user_input);
 
-    // [New] 최종 저장 경로 결정 로직
     std::string final_save_path;
     
     if (user_input.empty()) {
-        // 1. 입력 없음 -> 현재 경로 + 원본 파일명
         final_save_path = "Downloaded_" + std::filesystem::path(target_path).filename().string();
     } else {
         std::filesystem::path p(user_input);
         if (std::filesystem::is_directory(p)) {
-            // 2. 폴더 입력 -> 폴더 + 원본 파일명 (C:\Downloads + aaa.pdf)
+            // 폴더 입력 시 파일명 자동 추가
             final_save_path = (p / std::filesystem::path(target_path).filename()).string();
         } else {
-            // 3. 파일명까지 입력 -> 그대로 사용
+            // 파일명 입력 시 그대로 사용
             final_save_path = user_input;
         }
     }
