@@ -1,0 +1,10 @@
+{
+  "name": "hira-helper",
+  "version-string": "2.0.0",
+  "dependencies": [
+    "crow",
+    "spdlog",
+    "nlohmann-json",
+    "cpr"
+  ]
+}
