@@ -5,8 +5,9 @@
 #include <cpr/cpr.h>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
-#include <windows.h> 
+#include <windows.h> // [Essential] 콘솔 설정
 
+// [Fix] u8path 경고 무시
 #define _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING
 
 using json = nlohmann::json;
@@ -23,10 +24,12 @@ std::string RemoveQuotes(std::string path) {
     return path;
 }
 
+// [Input Helper] UTF-8 String -> Windows Path
 std::filesystem::path ToPath(const std::string& utf8_str) {
     return std::filesystem::u8path(utf8_str);
 }
 
+// [Output Helper] Windows Path -> UTF-8 String
 std::string PathToStr(const std::filesystem::path& p) {
     std::u8string u8 = p.u8string();
     return std::string(reinterpret_cast<const char*>(u8.c_str()));
@@ -62,7 +65,6 @@ void TestDelete() {
     std::string target;
     std::cout << "\n[Input] Enter Folder Name to Delete (e.g. Series001): ";
     
-    // [Fix] 공백 포함 경로 지원을 위해 getline 사용
     std::cin.ignore();
     std::getline(std::cin, target);
     target = RemoveQuotes(target);
@@ -121,8 +123,6 @@ void TestFileDownload() {
     std::string target_path;
     std::cout << "\n[Input] Enter Relative Path (e.g. Uploads\\제목 없음.png): ";
     
-    // [Fix] cin >> 대신 getline 사용 (공백 문제 해결)
-    // 앞선 메뉴 선택의 엔터키가 버퍼에 있으므로 ignore() 호출 필요
     std::cin.ignore(); 
     std::getline(std::cin, target_path);
     target_path = RemoveQuotes(target_path);
@@ -130,7 +130,7 @@ void TestFileDownload() {
     std::string user_input;
     std::cout << "[Input] Enter Save Path (Folder or File) [Default: Current Dir]: ";
     
-    // [Fix] 여기서는 ignore 불필요 (위의 getline이 버퍼를 비워줌)
+    // getline 사용 (ignore 불필요)
     std::getline(std::cin, user_input);
     user_input = RemoveQuotes(user_input);
 
@@ -171,6 +171,7 @@ void TestFileDownload() {
 }
 
 int main() {
+    // [Crucial] 윈도우 콘솔 UTF-8 설정
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 

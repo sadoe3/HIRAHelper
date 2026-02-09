@@ -4,21 +4,23 @@
 #include <fstream>
 #include <spdlog/spdlog.h>
 
-// [Fix] C++20 u8path 경고 무시
+// [Fix] C++20 u8path 경고 무시 (MSVC 호환성)
 #define _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING
 
 namespace fs = std::filesystem;
 
 class StorageHandler {
-public: // [Change] main.cpp에서도 쓸 수 있게 public으로 변경
+public: // main.cpp에서도 헬퍼 함수를 사용할 수 있도록 public으로 선언
+    
     // [Helper] UTF-8 String -> Windows Path
+    // 입력된 UTF-8 문자열을 OS가 이해하는 경로(Wide String)로 변환
     static fs::path ToPath(const std::string& utf8_str) {
         return fs::u8path(utf8_str);
     }
 
-    // [Helper] Windows Path -> UTF-8 String (로그/헤더용)
+    // [Helper] Windows Path -> UTF-8 String
+    // 경로를 로그나 HTTP 헤더에 실을 때 ANSI 변환 에러(500) 방지
     static std::string PathToStr(const fs::path& p) {
-        // .string()은 ANSI로 변환하려다 죽으므로, .u8string()을 써야 함
         std::u8string u8 = p.u8string();
         return std::string(reinterpret_cast<const char*>(u8.c_str()));
     }
@@ -98,7 +100,7 @@ public:
             fs::path p = ToPath(local_root) / ToPath(subpath);
             
             if (fs::exists(p) && fs::is_regular_file(p)) {
-                // [Crucial Fix] 여기서 .string()을 쓰면 한글 윈도우가 아닐 때 서버가 죽음
+                // [Crucial Fix] .string() 사용 시 한글 윈도우가 아니면 500 에러 발생함. PathToStr 필수.
                 out_full_path = PathToStr(p);
                 return true;
             }
