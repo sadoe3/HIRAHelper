@@ -1,3 +1,8 @@
+/**
+ * @file HtmlTemplates.hpp
+ * @brief config 설정을 위한 html 코드.
+ */
+
 #pragma once
 #include <string>
 
