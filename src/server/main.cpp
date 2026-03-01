@@ -201,12 +201,15 @@ int main() {
                     if (filename_it != params.end()) {
                         std::string raw_name = filename_it->second;
                         
-                        // 파일명을 감싸고 있는 따옴표 제거 처리
+                        // 따옴표 제거
                         if (raw_name.size() >= 2 && raw_name.front() == '"' && raw_name.back() == '"') {
                             raw_name = raw_name.substr(1, raw_name.size() - 2);
                         }
                         
-                        // 업로드 실행: 안전한 저장을 위해 Atomic 방식 사용, 결과는 Uploads 폴더로 들어감
+                        // 클라이언트가 URL 인코딩해서 보낸 파일명을 다시 UTF-8 한글로 복원
+                        raw_name = UrlDecode(raw_name);
+                        
+                        // 이제 raw_name은 완벽한 "한글.jpg"가 되어 StorageHandler로 넘어갑니다.
                         if (StorageHandler::SaveFileAtomic(uploads_dir, raw_name, part.body)) {
                             saved_count++;
                         }
