@@ -1,9 +1,10 @@
 /**
  * @file Cleaner.hpp
- * @brief 디스크 공간 관리를 위한 자동 파일 정리 모듈.
+ * @brief 서버 디스크 공간 관리를 위한 자동 파일 정리 모듈.
  *
- * 백그라운드 스레드에서 주기적으로 동작하며, 설정된 보관 기간(retention_days)이
- * 지난 파일들을 캐시 폴더에서 자동으로 삭제하여 디스크 용량 부족을 방지합니다.
+ * 백그라운드 스레드에서 지정된 주기(interval)마다 동작하며, 
+ * 설정된 보관 기간(retention_days)이 지난 오래된 파일들을 캐시 루트 하위 
+ * 전체 폴더(Downloads, Uploads 등)에서 찾아 자동으로 삭제합니다.
  */
 
 #pragma once
@@ -11,101 +12,75 @@
 #include <chrono>
 #include <filesystem>
 #include <spdlog/spdlog.h>
-#include "ConfigManager.hpp" // 설정값(보관 주기 등)을 읽기 위해 포함
+#include "ConfigManager.hpp" 
 
 namespace fs = std::filesystem;
 
-/**
- * @class Cleaner
- * @brief 주기적인 파일 정리 작업을 수행하는 정적 유틸리티 클래스
- */
 class Cleaner {
 public:
     /**
-     * @brief 클리너 스레드 시작 함수
-     * 메인 스레드와 분리된(Detached) 백그라운드 스레드를 생성하여
-     * 주기적으로 RunCleanup()을 실행합니다.
-     * * @param cm 설정 관리자 객체 (설정값 참조용)
+     * @brief 파일 자동 정리 스레드를 구동합니다.
+     * * OS에 스레드 관리를 위임(detach)하여 서버의 메인 로직 처리 성능에 
+     * 영향을 주지 않으면서 백그라운드에서 주기적으로 동작합니다.
+     * * @param cm 서버 설정 관리자 객체 참조 (동적 설정 변경 반영을 위해)
      */
     static void Start(ConfigManager& cm) {
-        // 1. 설정에서 기능이 꺼져있으면(false) 즉시 종료
+        // 기능 활성화 여부 체크
         if (!cm.config.cleaner_enabled) {
             spdlog::info("[Cleaner] Disabled by config.");
             return;
         }
 
-        // 2. 백그라운드 스레드 생성 (람다 함수 실행)
-        // cm 객체는 참조로 캡처하여 최신 설정값을 계속 읽을 수 있게 함
         std::thread([&cm]() {
-            // 시작 로그: 설정된 주기와 보관 기간 출력
             spdlog::info("[Cleaner] Started. Interval: {} days, Retention: {} days", 
                           cm.config.cleaner_interval_days, cm.config.retention_days);
             
-            // 무한 루프: 프로그램이 종료될 때까지 계속 동작
+            // 데몬(Daemon) 스레드 역할 수행
             while (true) {
-                // 설정된 주기(일 단위)를 시간 단위로 변환하여 대기 (Sleep)
-                // 예: 1일 -> 24시간 대기. 이 동안은 CPU를 쓰지 않음 (Blocked)
+                // 설정된 주기(일 단위)만큼 스레드를 슬립(대기) 상태로 전환하여 CPU 자원 소모 방지
                 std::this_thread::sleep_for(std::chrono::hours(24 * cm.config.cleaner_interval_days));
-                
-                // 대기가 끝나면 청소 작업 실행
-                // (참고: 실제 프로덕션에서는 sleep 대신 condition_variable을 써서
-                //  프로그램 종료 시 즉시 깨어날 수 있게 만드는 것이 더 좋지만, 
-                //  현재 구조에서는 간단한 sleep으로 구현됨)
                 RunCleanup(cm);
             }
-        }).detach(); // 3. 메인 스레드와 분리 (Detach)
-        // detach()를 호출하면 메인 함수가 끝나도 스레드 객체 소멸 시 에러가 나지 않으며,
-        // OS가 스레드 수명을 관리하게 됨 (데몬 스레드처럼 동작)
+        }).detach(); 
     }
 
 private:
     /**
-     * @brief 실제 파일 삭제 로직을 수행하는 함수
-     * 캐시 폴더를 순회하며 오래된 파일을 찾아 삭제합니다.
+     * @brief 캐시 디렉토리를 순회하며 보존 기간이 만료된 파일을 삭제합니다.
      */
     static void RunCleanup(ConfigManager& cm) {
         spdlog::info("[Cleaner] Scanning for old files...");
         try {
-            // 1. 기준 시간 계산 (Cutoff Time)
-            // 현재 시간 - 보관 기간(예: 30일) = 삭제 기준 시점
-            // 이 시점보다 이전에 수정된 파일은 삭제 대상임
+            // 삭제를 결정할 기준 시점(Cut-off) 계산
             auto now = std::chrono::system_clock::now();
             auto cutoff = now - std::chrono::hours(24 * cm.config.retention_days);
             
-            // 2. 대상 폴더 확인
             fs::path target = cm.config.cache_root;
-            if (!fs::exists(target)) return; // 폴더가 없으면 할 일 없음
+            if (!fs::exists(target)) return; 
 
-            int deleted_count = 0; // 삭제된 파일 수 카운터
+            int deleted_count = 0; 
 
-            // 3. 재귀적 탐색 (Recursive Iterator)
-            // 하위 폴더까지 모두 뒤져서 파일 하나하나 검사
+            // 지정된 최상위 폴더 이하의 모든 파일 및 서브 폴더를 재귀적으로 스캔
             for (const auto& entry : fs::recursive_directory_iterator(target)) {
                 
-                // 디렉토리가 아닌 '일반 파일'인 경우만 처리
+                // 폴더가 아닌 실제 파일 단위로만 시간 검사 및 삭제 수행
                 if (fs::is_regular_file(entry)) {
-                    // 파일의 마지막 수정 시간(Last Write Time) 가져오기
                     auto ftime = fs::last_write_time(entry);
                     
-                    // [C++20 Time Conversion]
-                    // 파일 시스템 시간(file_time_type)을 시스템 시간(system_clock)으로 변환
-                    // (컴파일러마다 file_clock과 system_clock의 에포크가 다를 수 있어 보정 필요)
+                    // 파일 시스템 시간을 C++ 시스템 시간 표준(System Clock)으로 안전하게 형변환
                     auto sys_ftime = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
                         ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now()
                     );
 
-                    // 4. 삭제 판단 및 실행
-                    // 파일 수정 시간이 기준 시점(cutoff)보다 과거라면? -> 삭제
+                    // 파일의 마지막 수정 시점이 보존 기준 시점보다 과거라면 삭제 진행
                     if (sys_ftime < cutoff) {
-                        fs::remove(entry); // 파일 삭제
+                        fs::remove(entry);
                         deleted_count++;
-                        // 디버그 레벨 로그 (파일이 많을 수 있으므로 info 대신 debug 권장)
                         spdlog::debug("[Cleaner] Deleted: {}", entry.path().filename().string());
                     }
                 }
             }
             
-            // 5. 결과 리포팅
             if (deleted_count > 0) {
                 spdlog::info("[Cleaner] Completed. Deleted {} files.", deleted_count);
             } else {
@@ -113,7 +88,6 @@ private:
             }
 
         } catch (const std::exception& e) {
-            // 권한 문제나 파일 잠금 등으로 에러 발생 시 로그 남기고 계속 진행
             spdlog::error("[Cleaner] Error: {}", e.what());
         }
     }

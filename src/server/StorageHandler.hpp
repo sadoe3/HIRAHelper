@@ -1,11 +1,9 @@
 /**
  * @file StorageHandler.hpp
- * @brief 파일 시스템(I/O) 작업을 처리하는 정적 유틸리티 클래스.
- *
- * NAS 폴더 다운로드(복사), 로컬 파일 삭제, Atomic 파일 업로드(임시파일 -> 이름변경),
- * 파일 경로 검증 등의 기능을 제공합니다.
- * 특히 UTF-8 문자열과 Windows 파일 경로(fs::path) 간의 안전한 변환을 지원하여
- * 다국어(한글 등) 파일명 처리를 보장합니다.
+ * @brief 파일 입출력(I/O) 및 보안 검증을 전담하는 유틸리티 클래스.
+ * * 디렉토리 탐색(Path Traversal) 공격을 방어하기 위한 파일명 검증과, 
+ * 다국어(UTF-8) 파일명의 윈도우 OS 안전 처리, 전원 차단 등 물리적 장애에 대비한 
+ * 원자적 쓰기(Atomic Write) 기술을 내장하고 있습니다.
  */
 
 #pragma once
@@ -14,78 +12,73 @@
 #include <fstream>
 #include <spdlog/spdlog.h>
 
-// [Fix] C++20 u8path 경고 무시 (MSVC 호환성)
-// C++20부터 u8path가 deprecated 되었으나, Windows 환경에서 UTF-8 경로 처리를 위해
-// 여전히 가장 확실한 방법이므로 경고를 끄고 사용합니다.
+// MSVC 환경에서 C++20부터 사용이 권장되지 않는 u8path에 대한 경고 로그 무시
+// (Windows 환경에서 UTF-8 경로 대응을 위해 여전히 가장 안정적인 방법임)
 #define _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING
 
 namespace fs = std::filesystem;
 
-/**
- * @class StorageHandler
- * @brief 파일 입출력 및 경로 처리를 담당하는 클래스
- */
 class StorageHandler {
 public: 
-    // main.cpp 등 외부에서도 경로 변환 헬퍼를 사용할 수 있도록 public으로 선언
-
     /**
-     * @brief [Helper] UTF-8 String -> Windows Path 변환
-     * * 클라이언트로부터 받은 UTF-8 문자열을 Windows OS가 이해하는
-     * 유니코드(Wide String) 기반의 fs::path 객체로 변환합니다.
-     * 이 함수를 거치지 않고 fs::path(string)을 바로 호출하면 한글이 깨집니다.
-     * * @param utf8_str UTF-8 인코딩된 문자열 (예: "한글파일.jpg")
-     * @return fs::path OS 호환 경로 객체
+     * @brief UTF-8 문자열을 윈도우 파일 시스템이 인식하는 경로 타입으로 변환합니다.
+     * 한글/특수문자 파일명이 OS단에서 깨지지 않게 보장합니다.
      */
     static fs::path ToPath(const std::string& utf8_str) {
         return fs::u8path(utf8_str);
     }
 
     /**
-     * @brief [Helper] Windows Path -> UTF-8 String 변환
-     * * 파일 시스템에서 읽은 경로(fs::path)를 로그 출력이나 HTTP 헤더 전송을 위해
-     * 표준 UTF-8 문자열로 변환합니다.
-     * .string() 함수는 시스템 로캘(ANSI/CP949)로 변환을 시도하다가
-     * 표현 불가능한 문자(이모지 등)를 만나면 예외를 던지며 서버를 죽일 수 있으므로,
-     * 반드시 이 함수를 통해 u8string() -> string 변환을 수행해야 합니다.
-     * * @param p Windows 경로 객체
-     * @return std::string UTF-8 인코딩된 문자열
+     * @brief 윈도우 경로 객체를 표준 UTF-8 문자열로 변환합니다.
+     * 로그 출력이나 HTTP 헤더 전송 시 인코딩 오류로 인한 서버 크래시를 방지합니다.
      */
     static std::string PathToStr(const fs::path& p) {
         std::u8string u8 = p.u8string();
         return std::string(reinterpret_cast<const char*>(u8.c_str()));
     }
 
+    /**
+     * @brief 클라이언트로부터 전달받은 파일명의 보안 무결성을 검증합니다.
+     * * 해커가 파일 이름에 '../' 등을 섞어 상위 시스템 폴더에 접근하는 
+     * 디렉토리 트래버설(Directory Traversal) 공격을 원천 차단합니다.
+     * * @param filename 검사할 파일 이름
+     * @return 유효한 순수 파일명이면 true, 경로 조작 문자가 포함되어 있으면 false
+     */
+    static bool IsValidFileName(const std::string& filename) {
+        if (filename.empty() || filename == "." || filename == "..") return false;
+        // 디렉토리 이동 문자인 슬래시나 역슬래시가 포함되어 있으면 즉시 거부
+        if (filename.find('/') != std::string::npos || filename.find('\\') != std::string::npos) return false;
+        return true;
+    }
+
 public:
     /**
-     * @brief [Phase 2] NAS 폴더 다운로드 (재귀적 복사)
-     * * NAS(Network Attached Storage)의 특정 폴더를 로컬 캐시 경로로 통째로 복사합니다.
-     * * @param unc_path 원본 NAS 경로 (UNC Path, 예: \\\\192.168.0.1\\Data)
-     * @param local_root 로컬 저장소 최상위 경로 (예: C:\\Temp\\Cache)
-     * @param out_local_path [Out] 실제 저장된 로컬 경로 반환
-     * @return true 성공 시, false 실패 시
+     * @brief NAS 서버로부터 대상 파일을 복사하여 로컬에 다운로드합니다.
+     * * @param unc_path 원본 파일의 NAS 전체 경로
+     * @param target_dir 파일이 저장될 로컬 캐시 폴더 (Downloads)
+     * @param out_local_path 다운로드가 완료된 파일의 실제 절대 경로 반환
+     * @return 성공 여부 (true/false)
      */
-    static bool DownloadFolder(const std::string& unc_path, const std::string& local_root, std::string& out_local_path) {
+    static bool DownloadSingleFile(const std::string& unc_path, const std::string& target_dir, std::string& out_local_path) {
         try {
-            fs::path source = ToPath(unc_path); // 원본 경로 변환
+            fs::path source = ToPath(unc_path); 
             
-            // 원본 존재 여부 확인
-            if (!fs::exists(source)) {
-                // PathToStr를 사용하여 경로가 깨지지 않게 로그 출력
-                spdlog::error("[404] NAS Source not found: {}", PathToStr(source));
+            // 대상이 실제 파일이 아니거나 존재하지 않으면 복사 불가
+            if (!fs::exists(source) || !fs::is_regular_file(source)) {
+                spdlog::error("[404] NAS Source file not found: {}", PathToStr(source));
                 return false;
             }
 
-            // 대상 경로 생성: CacheRoot / 원본폴더명
-            fs::path dest = ToPath(local_root) / source.filename();
+            // 다운로드 받을 최종 로컬 경로 결합
+            fs::path dest = ToPath(target_dir) / source.filename();
             
-            // 대상 폴더 생성 (이미 있으면 무시)
-            fs::create_directories(dest);
+            // 대상 경로의 상위 폴더가 지워졌을 경우를 대비해 디렉토리 복원 수행
+            fs::create_directories(dest.parent_path()); 
             
-            // 재귀적 복사 (하위 폴더 포함, 덮어쓰기 옵션)
-            fs::copy(source, dest, fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+            // 무조건 덮어쓰기(Overwrite) 옵션으로 로컬에 안전 복사
+            fs::copy(source, dest, fs::copy_options::overwrite_existing);
             
-            out_local_path = PathToStr(dest); // 결과 경로 반환
+            out_local_path = PathToStr(dest); 
             return true;
         } catch (const std::exception& e) {
             spdlog::error("[IO Error] Download failed: {}", e.what());
@@ -94,19 +87,21 @@ public:
     }
 
     /**
-     * @brief [Phase 2] 폴더 삭제
-     * * 지정된 폴더와 그 하위 모든 내용을 삭제합니다.
-     * * @param full_path 삭제할 폴더의 전체 경로
-     * @return true 삭제 성공 (또는 폴더가 없음), false 실패
+     * @brief 단일 파일을 디스크에서 영구 삭제합니다.
+     * * @param full_path 지우고자 하는 파일의 전체 절대 경로
+     * @return 삭제 성공 여부 (이미 삭제되었거나 없으면 false)
      */
-    static bool DeleteFolder(const std::string& full_path) {
+    static bool DeleteSingleFile(const std::string& full_path) {
         try {
             fs::path p = ToPath(full_path);
-            if (fs::exists(p)) {
-                fs::remove_all(p); // 폴더 및 하위 파일 전체 삭제
+            
+            // 삭제 시도 전, 대상이 일반 파일(regular file)인지 확인하여 폴더 오작동 방지
+            if (fs::exists(p) && fs::is_regular_file(p)) {
+                fs::remove(p);
+                spdlog::info("[IO] Deleted file: {}", PathToStr(p));
                 return true;
             }
-            return false; // 삭제할 폴더가 없음
+            return false; 
         } catch (const std::exception& e) {
             spdlog::error("[IO Error] Delete failed: {}", e.what());
             return false;
@@ -114,34 +109,40 @@ public:
     }
 
     /**
-     * @brief [Phase 5] Atomic File Write (안전한 파일 업로드)
-     * * 파일을 저장할 때 '임시 파일(.tmp) 작성 -> 원본 이름으로 변경(Rename)' 방식을 사용하여,
-     * 쓰기 도중 전원이 차단되거나 오류가 발생해도 원본 파일이 손상되지 않게 합니다.
-     * * @param folder_path 저장될 폴더 경로
-     * @param filename 저장할 파일명
-     * @param content 파일 내용 (바이너리 데이터)
-     * @return true 성공, false 실패
+     * @brief 네트워크 스트림 데이터를 로컬에 안전하게 파일로 저장합니다. (Atomic Write)
+     * * 파일 쓰기 작업 중 프로세스 강제 종료나 정전이 발생할 경우 파일이 손상(Corruption)
+     * 되는 것을 막기 위해 임시 파일(.tmp)을 먼저 쓰고, 쓰기가 완료되면 원본 이름으로 
+     * 빠르게 이름(Rename)을 변경하는 원자적 트랜잭션을 적용했습니다.
+     * * @param folder_path 파일이 저장될 대상 폴더 경로 (Uploads)
+     * @param filename 저장될 파일 이름
+     * @param content 작성할 파일의 바이너리 내용
+     * @return 저장 성공 여부
      */
     static bool SaveFileAtomic(const std::string& folder_path, const std::string& filename, const std::string& content) {
         try {
+            // 업로드 시도하는 파일명 검증 (경로 조작 공격 1차 방어)
+            if (!IsValidFileName(filename)) {
+                spdlog::warn("[Security] Invalid upload filename blocked: {}", filename);
+                return false;
+            }
+
             fs::path dir = ToPath(folder_path);
             if (!fs::exists(dir)) fs::create_directories(dir);
 
-            fs::path final_path = dir / ToPath(filename);      // 최종 저장 경로
-            fs::path temp_path = dir / ToPath(filename + ".tmp"); // 임시 파일 경로
+            fs::path final_path = dir / ToPath(filename);
+            fs::path temp_path = dir / ToPath(filename + ".tmp");
 
-            // 1. 임시 파일 쓰기 (.tmp)
+            // 1. 임시 파일 스트림 열고 디스크 쓰기 시작
             {
-                std::ofstream out(temp_path, std::ios::binary); // 바이너리 모드로 열기
-                if (!out.is_open()) {
-                    spdlog::error("[IO] Failed to open temp file: {}", PathToStr(temp_path));
-                    return false;
-                }
+                std::ofstream out(temp_path, std::ios::binary); 
+                if (!out.is_open()) return false;
                 out.write(content.data(), content.size());
-            } // 여기서 ofstream이 닫히며(flush) 파일이 디스크에 기록됨
+            } // 이 블록을 빠져나가면 ofstream이 소멸되며 디스크에 완전 기록됨 (flush)
 
-            // 2. Atomic Rename (임시 파일 -> 최종 파일)
-            // OS 수준에서 원자적(Atomic)으로 처리되어 안전함
+            // 2. 만약 기존 동일 이름의 파일이 이미 존재하면 충돌 방지를 위해 선 삭제
+            if (fs::exists(final_path)) fs::remove(final_path);
+
+            // 3. 임시 파일을 최종 이름으로 빠르게 변경(Rename) 처리
             fs::rename(temp_path, final_path);
             
             spdlog::info("[IO] Saved Atomic: {}", PathToStr(final_path));
@@ -150,32 +151,5 @@ public:
             spdlog::error("[IO] Save Failed: {}", e.what());
             return false;
         }
-    }
-
-    /**
-     * @brief [Phase 5] 파일 다운로드를 위한 경로 검증 및 반환
-     * * 클라이언트가 요청한 상대 경로가 유효한지 검사하고, 실제 전체 경로를 반환합니다.
-     * Path Traversal 공격(.. 문자 포함)을 방어합니다.
-     * * @param local_root 로컬 캐시 최상위 경로
-     * @param subpath 클라이언트가 요청한 상대 경로
-     * @param out_full_path [Out] 검증된 전체 경로 (UTF-8 String)
-     * @return true 유효한 파일임, false 파일이 없거나 잘못된 경로
-     */
-    static bool GetFileForDownload(const std::string& local_root, const std::string& subpath, std::string& out_full_path) {
-        try {
-            // [Security] 상위 폴더 접근(..) 시도 차단
-            if (subpath.find("..") != std::string::npos) return false;
-
-            fs::path p = ToPath(local_root) / ToPath(subpath);
-            
-            // 파일 존재 여부 및 디렉토리가 아닌지 확인
-            if (fs::exists(p) && fs::is_regular_file(p)) {
-                // [Crucial Fix] 여기서 .string()을 쓰면 한글 윈도우가 아닐 때 서버가 죽음
-                // 반드시 PathToStr를 통해 UTF-8 문자열로 반환해야 함
-                out_full_path = PathToStr(p);
-                return true;
-            }
-            return false;
-        } catch (...) { return false; }
     }
 };
