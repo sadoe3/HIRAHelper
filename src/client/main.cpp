@@ -58,6 +58,29 @@ std::string PathToStr(const std::filesystem::path& p) {
     return std::string(reinterpret_cast<const char*>(u8.c_str()));
 }
 
+/**
+ * @brief [Client Helper] 문자열을 URL 인코딩된 형태로 변환합니다.
+ * 델파이의 TIdURI.ParamsEncode 와 동일한 역할을 수행합니다.
+ */
+std::string UrlEncode(const std::string& value) {
+    std::ostringstream escaped;
+    escaped.fill('0');
+    escaped << std::hex;
+
+    for (char c : value) {
+        // 영숫자와 일부 안전한 문자는 그대로 유지
+        if (isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            escaped << c;
+        } else {
+            // 나머지는 %XX 형태로 변환 (한글, 공백, + 기호 등 완벽 처리)
+            escaped << std::uppercase;
+            escaped << '%' << std::setw(2) << int((unsigned char)c);
+            escaped << std::nouppercase;
+        }
+    }
+    return escaped.str();
+}
+
 // =========================================================
 // 기능 테스트 구현부 (Features)
 // =========================================================
@@ -76,7 +99,7 @@ void TestNasDownload() {
 
     // JSON 본문 구성 (v3.0에서도 NAS 경로는 target_path 파라미터 사용)
     json body;
-    body["target_path"] = target;
+    body["target_path"] = UrlEncode(target);
 
     spdlog::info("Sending NAS Download Request: {}", target);
     
@@ -105,7 +128,7 @@ void TestDeleteDownloadsFile() {
 
     // [v3.0 변경] 파라미터명이 target_path에서 file_name으로 변경됨
     json body;
-    body["file_name"] = filename;
+    body["file_name"] = UrlEncode(filename);
 
     spdlog::info("Sending Delete Request for Downloads: {}", filename);
     
@@ -142,8 +165,11 @@ void TestFileUpload() {
     spdlog::info("Uploading {} to server 'Uploads' folder...", safe_path);
 
     // cpr Multipart 양식 구성. 내부적으로 파일을 읽어서 스트리밍합니다.
+    std::string encoded_filename = UrlEncode(PathToStr(file_path.filename()));
+    
     cpr::Multipart multipart_data{};
-    multipart_data.parts.push_back({"file", cpr::File(safe_path)});
+    // cpr::File{실제파일경로, 서버에알려줄파일명} 형태로 오버로딩 호출
+    multipart_data.parts.push_back({"file", cpr::File{safe_path, encoded_filename}});
 
     auto r = cpr::Post(cpr::Url{AGENT_URL + "/file/upload"},
                        multipart_data,

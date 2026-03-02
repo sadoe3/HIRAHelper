@@ -129,7 +129,8 @@ int main() {
         auto x = crow::json::load(req.body);
         if (!x || !x.has("target_path")) return crow::response(400, "Invalid JSON");
         
-        std::string target = x["target_path"].s(); // 클라이언트가 요청한 NAS 내부 경로
+        // url 디코딩 처리를 통해 한국어 관련 문제 해결
+        std::string target = UrlDecode(x["target_path"].s()); // 클라이언트가 요청한 NAS 내부 경로
         std::string target_ip, relative_path;
 
         // 접두사를 통해 내부 라우팅 보안 처리 (허용되지 않은 경로는 접근 원천 차단)
@@ -166,7 +167,8 @@ int main() {
         auto x = crow::json::load(req.body);
         if (!x || !x.has("file_name")) return crow::response(400, "Missing 'file_name'");
         
-        std::string file_name = x["file_name"].s();
+        // url 디코딩 처리를 통해 한국어 관련 문제 해결
+        std::string file_name = UrlDecode(x["file_name"].s());
         
         // 보안 검증: 경로 탐색(Path Traversal) 시도를 원천 차단
         if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
@@ -235,8 +237,9 @@ int main() {
     ([&](const crow::request& req) {
         auto name_param = req.url_params.get("file_name"); 
         if (!name_param) return crow::response(400, "Missing 'file_name' parameter");
-
-        std::string file_name(name_param);
+        
+        // url 디코딩 처리를 통해 한국어 관련 문제 해결
+        std::string file_name = UrlDecode(std::string(name_param));
 
         // 보안 검증: 경로 탐색(Path Traversal) 시도를 원천 차단
         if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
@@ -277,7 +280,8 @@ int main() {
         auto x = crow::json::load(req.body);
         if (!x || !x.has("file_name")) return crow::response(400, "Missing 'file_name'");
         
-        std::string file_name = x["file_name"].s();
+        // url 디코딩 처리를 통해 한국어 관련 문제 해결
+        std::string file_name = UrlDecode(x["file_name"].s());
         
         // 보안 검증: 경로 탐색(Path Traversal) 시도를 원천 차단
         if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
