@@ -173,10 +173,11 @@ int main() {
         // 보안 검증: 경로 탐색(Path Traversal) 시도를 원천 차단
         if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
 
-        // 대상 파일의 절대 경로 조합
-        fs::path full_path = fs::path(downloads_dir) / file_name;
+        // ToPath를 씌워서 한글 폴더 결합 시 크래시 방지
+        fs::path full_path = fs::path(downloads_dir) / StorageHandler::ToPath(file_name);
 
-        if (StorageHandler::DeleteSingleFile(full_path.string())) { 
+        // PathToStr를 씌워서 완전한 UTF-8 문자열로 변환 후 삭제 함수에 전달
+        if (StorageHandler::DeleteSingleFile(StorageHandler::PathToStr(full_path))) { 
             crow::json::wvalue res;
             res["status"] = "deleted";
             return crow::response(200, res);
@@ -286,10 +287,11 @@ int main() {
         // 보안 검증: 경로 탐색(Path Traversal) 시도를 원천 차단
         if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
 
-        // 삭제 대상의 절대 경로 조합 (무조건 Uploads 폴더 안에서만 탐색)
-        fs::path full_path = fs::path(uploads_dir) / file_name;
+        // ToPath를 씌워서 한글 폴더 결합 시 크래시 방지
+        fs::path full_path = fs::path(uploads_dir) / StorageHandler::ToPath(file_name);
 
-        if (StorageHandler::DeleteSingleFile(full_path.string())) { 
+        // PathToStr를 씌워서 완전한 UTF-8 문자열로 변환 후 삭제 함수에 전달
+        if (StorageHandler::DeleteSingleFile(StorageHandler::PathToStr(full_path))) { 
             crow::json::wvalue res;
             res["status"] = "deleted";
             return crow::response(200, res);
