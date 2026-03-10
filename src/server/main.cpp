@@ -142,7 +142,10 @@ int main() {
             target_ip = cm.config.nas_long_ip;
             relative_path = target.length() > 8 ? target.substr(9) : "";
         }
-        else return crow::response(400, "Invalid Path Prefix");
+        else {
+            spdlog::error("[API] PACS download failed (Invalid Prefix): {}", target);
+            return crow::response(400, "Invalid Path Prefix");
+        }
 
         // NAS UNC 경로 조립 (예: \\192.168.0.1\Study01\Image.dcm)
         std::string unc_path = "\\\\" + target_ip + "\\" + relative_path;
@@ -150,11 +153,14 @@ int main() {
         
         // 다운로드 실행: 결과물은 항상 Downloads 폴더로 들어감
         if (StorageHandler::DownloadSingleFile(unc_path, downloads_dir, local_path)) {
+            spdlog::info("[API] PACS download SUCCESS -> Saved at: {}", local_path);
             crow::json::wvalue res;
             res["status"] = "success";
             res["local_path"] = local_path;
             return crow::response(200, res);
         }
+
+        spdlog::error("[API] PACS download FAILED from: {}", unc_path);
         return crow::response(500, "Download Failed");
     });
 
@@ -169,6 +175,8 @@ int main() {
         
         // url 디코딩 처리를 통해 한국어 관련 문제 해결
         std::string file_name = UrlDecode(x["file_name"].s());
+
+        spdlog::info("[API] Requested deletion in Downloads: {}", file_name);
         
         // 보안 검증: 경로 탐색(Path Traversal) 시도를 원천 차단
         if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
@@ -178,10 +186,13 @@ int main() {
 
         // PathToStr를 씌워서 완전한 UTF-8 문자열로 변환 후 삭제 함수에 전달
         if (StorageHandler::DeleteSingleFile(StorageHandler::PathToStr(full_path))) { 
+            spdlog::info("[API] Deletion SUCCESS: {}", file_name);
             crow::json::wvalue res;
             res["status"] = "deleted";
             return crow::response(200, res);
         }
+
+        spdlog::warn("[API] Deletion FAILED (File not found): {}", file_name);
         return crow::response(404, "File not found");
     });
 
@@ -214,8 +225,11 @@ int main() {
                         
                         // 이제 raw_name은 완벽한 "한글.jpg"가 되어 StorageHandler로 넘어갑니다.
                         if (StorageHandler::SaveFileAtomic(uploads_dir, raw_name, part.body)) {
+                            spdlog::info("[API] File upload SUCCESS: {}", raw_name);
                             saved_count++;
                         }
+                        else 
+                            spdlog::error("[API] File upload FAILED: {}", raw_name);
                     }
                 }
             }
@@ -242,6 +256,8 @@ int main() {
         // url 디코딩 처리를 통해 한국어 관련 문제 해결
         std::string file_name = UrlDecode(std::string(name_param));
 
+        spdlog::info("[API] Requested file download: {}", file_name);
+
         // 보안 검증: 경로 탐색(Path Traversal) 시도를 원천 차단
         if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
 
@@ -249,12 +265,16 @@ int main() {
         fs::path full_path = fs::path(downloads_dir) / StorageHandler::ToPath(file_name);
 
         if (!fs::exists(full_path) || !fs::is_regular_file(full_path)) {
+            spdlog::warn("[API] File download FAILED (Not found): {}", file_name);
             return crow::response(404, "File not found");
         }
 
         // 바이너리 읽기 모드로 파일 오픈
         std::ifstream file(full_path, std::ios::binary);
-        if (!file.is_open()) return crow::response(500, "File open error");
+        if (!file.is_open()) {
+            spdlog::error("[API] File download FAILED (Open error): {}", file_name);
+            return crow::response(500, "File open error");
+        }
 
         // 파일 데이터를 메모리 버퍼에 담음
         std::ostringstream ss;
@@ -269,6 +289,7 @@ int main() {
         std::string filename_utf8 = StorageHandler::PathToStr(full_path.filename());
         res.set_header("Content-Disposition", "attachment; filename=\"" + filename_utf8 + "\"");
         
+        spdlog::info("[API] File download SUCCESS: {}", file_name);
         return res;
     });
 
@@ -284,6 +305,8 @@ int main() {
         // url 디코딩 처리를 통해 한국어 관련 문제 해결
         std::string file_name = UrlDecode(x["file_name"].s());
         
+        spdlog::info("[API] Requested deletion in Uploads: {}", file_name);
+
         // 보안 검증: 경로 탐색(Path Traversal) 시도를 원천 차단
         if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
 
@@ -292,10 +315,13 @@ int main() {
 
         // PathToStr를 씌워서 완전한 UTF-8 문자열로 변환 후 삭제 함수에 전달
         if (StorageHandler::DeleteSingleFile(StorageHandler::PathToStr(full_path))) { 
+            spdlog::info("[API] Deletion SUCCESS: {}", file_name);
             crow::json::wvalue res;
             res["status"] = "deleted";
             return crow::response(200, res);
         }
+        
+        spdlog::warn("[API] Deletion FAILED (File not found): {}", file_name);
         return crow::response(404, "File not found");
     });
 
