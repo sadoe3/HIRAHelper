@@ -166,12 +166,16 @@ public:
      * @param dest_dir 압축이 풀린 파일들이 저장될 대상 대상 폴더 경로 (예: C:\HiraCache\Downloads\123)
      * @return 압축 해제 성공 여부 (시스템 콜 리턴 코드가 0이면 true)
      */
-    static bool ExtractZip(const std::string& zip_path, const std::string& dest_dir) {
-        // Windows 10/11 기본 내장 tar 명령어를 사용해 압축 해제
-        // 시스템 콜을 사용하므로 경로에 띄어쓰기가 있을 경우를 대비해 따옴표(\")로 감싸줍니다.
-        std::string command = "tar -xf \"" + zip_path + "\" -C \"" + dest_dir + "\"";
-        
-        int result = std::system(command.c_str());
-        return (result == 0); // 성공 시 0 반환
+    static bool ExtractZip(const fs::path& zip_path, const fs::path& dest_dir) {
+        try {
+            // 윈도우 CMD 창에서 한글 깨짐 방지를 위해 Wide String(UTF-16)으로 명령어 조립
+            std::wstring command = L"tar -xf \"" + zip_path.wstring() + L"\" -C \"" + dest_dir.wstring() + L"\"";
+            
+            // 일반 system() 대신 유니코드를 완벽 지원하는 _wsystem() 사용
+            int result = _wsystem(command.c_str());
+            return (result == 0);
+        } catch (...) {
+            return false;
+        }
     }
 };

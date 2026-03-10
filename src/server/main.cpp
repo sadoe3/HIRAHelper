@@ -259,8 +259,8 @@ int main() {
             fs::create_directories(extract_dir);
         }
 
-        // 실제 압축 해제 로직 (StorageHandler에 ExtractZip 함수가 있다고 가정)
-        if (StorageHandler::ExtractZip(StorageHandler::PathToStr(zip_path), StorageHandler::PathToStr(extract_dir))) {
+        // 실제 압축 해제 로직
+        if (StorageHandler::ExtractZip(zip_path, extract_dir)) {
             spdlog::info("[API] Extraction SUCCESS -> Extracted to: {}", StorageHandler::PathToStr(extract_dir));
             
             crow::json::wvalue res;
