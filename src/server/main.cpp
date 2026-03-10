@@ -133,6 +133,13 @@ int main() {
         std::string target = UrlDecode(x["target_path"].s()); // 클라이언트가 요청한 NAS 내부 경로
         std::string target_ip, relative_path;
 
+        // 클라이언트가 지정한 하위 폴더 이름 받기 (없으면 빈 문자열)
+        std::string sub_dir = "";
+        if (x.has("sub_dir")) {
+            sub_dir = UrlDecode(x["sub_dir"].s());
+        }
+        spdlog::info("[API] Requested PACS download: {} (Sub-dir: {})", target, sub_dir.empty() ? "None" : sub_dir);
+
         // 접두사를 통해 내부 라우팅 보안 처리 (허용되지 않은 경로는 접근 원천 차단)
         if (target.rfind("PacsShort", 0) == 0) { 
             target_ip = cm.config.nas_short_ip;
@@ -149,10 +156,22 @@ int main() {
 
         // NAS UNC 경로 조립 (예: \\192.168.0.1\Study01\Image.dcm)
         std::string unc_path = "\\\\" + target_ip + "\\" + relative_path;
+
+        // 다운로드 목적지 폴더 결정 (sub_dir이 있으면 하위 폴더 생성)
+        fs::path dest_dir = fs::path(downloads_dir);
+        if (!sub_dir.empty()) {
+            // 경로 탐색 공격(..\) 방지를 위해 순수 폴더명만 추출하여 결합
+            dest_dir = dest_dir / StorageHandler::ToPath(StorageHandler::PathToStr(fs::path(sub_dir).filename()));
+            
+            // 폴더가 없으면 즉시 생성
+            if (!fs::exists(dest_dir)) {
+                fs::create_directories(dest_dir); 
+            }
+        }
+
         std::string local_path;
-        
-        // 다운로드 실행: 결과물은 항상 Downloads 폴더로 들어감
-        if (StorageHandler::DownloadSingleFile(unc_path, downloads_dir, local_path)) {
+        // 다운로드 실행: 결과물은 항상 Downloads 폴더안으로 들어감
+        if (StorageHandler::DownloadSingleFile(unc_path, dest_dir.string(), local_path)) {
             spdlog::info("[API] PACS download SUCCESS -> Saved at: {}", local_path);
             crow::json::wvalue res;
             res["status"] = "success";
@@ -320,7 +339,7 @@ int main() {
             res["status"] = "deleted";
             return crow::response(200, res);
         }
-        
+
         spdlog::warn("[API] Deletion FAILED (File not found): {}", file_name);
         return crow::response(404, "File not found");
     });
