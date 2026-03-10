@@ -60,6 +60,9 @@ private:
 
             int deleted_count = 0; 
 
+            // ---------------------------------------------------------
+            // [1단계] 기존 로직: 오래된 '파일' 삭제 (이건 원래 있던 로직)
+            // ---------------------------------------------------------
             // 지정된 최상위 폴더 이하의 모든 파일 및 서브 폴더를 재귀적으로 스캔
             for (const auto& entry : fs::recursive_directory_iterator(target)) {
                 
@@ -78,6 +81,46 @@ private:
                         deleted_count++;
                         spdlog::debug("[Cleaner] Deleted: {}", entry.path().filename().string());
                     }
+                }
+            }
+
+
+            // ---------------------------------------------------------
+            // [2단계] 새로 추가: 빈 껍데기 '폴더' 완벽 청소
+            // ---------------------------------------------------------
+            std::vector<fs::path> empty_dirs;
+            // 지우면 안되는 기본 뼈대 폴더 경로 정의
+            fs::path base_downloads = target / "Downloads";
+            fs::path base_uploads = target / "Uploads";
+
+            // 1. 타겟 폴더 내의 모든 하위 디렉터리 경로를 수집
+            for (const auto& entry : fs::recursive_directory_iterator(target)) {
+                if (fs::is_directory(entry.status())) {
+                    empty_dirs.push_back(entry.path());
+                }
+            }
+
+            // 2. 경로의 길이(깊이)를 기준으로 내림차순 정렬 
+            // -> 가장 깊은 곳에 있는 하위 폴더부터 처리하기 위함
+            std::sort(empty_dirs.begin(), empty_dirs.end(), [](const fs::path& a, const fs::path& b) {
+                return a.string().length() > b.string().length();
+            });
+
+            // 3. 깊은 곳부터 순차적으로 빈 폴더인지 확인하고 삭제
+            for (const auto& dir : empty_dirs) {
+                try {
+                    // 뼈대 폴더(Downloads, Uploads)는 비어있어도 절대 지우지 않음!
+                    if (dir == base_downloads || dir == base_uploads || dir == target) {
+                        continue; 
+                    }
+
+                    // 폴더가 비어있다면 가차없이 삭제
+                    if (fs::is_empty(dir)) {
+                        fs::remove(dir);
+                    }
+                } catch (...) {
+                    // 만약 누군가(탐색기 등)가 폴더를 열고 있어서 Lock이 걸려있다면,
+                    // 프로그램이 죽지 않도록 조용히 넘어가고 다음 청소 주기(내일)에 지웁니다.
                 }
             }
             
