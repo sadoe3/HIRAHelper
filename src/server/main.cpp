@@ -215,6 +215,65 @@ int main() {
         return crow::response(404, "File not found");
     });
 
+
+    // =========================================================
+    // [Route] Downloads 폴더 내 ZIP 파일 압축 해제 (POST /pacs/extract)
+    // =========================================================
+    // Downloads 폴더에 있는 zip 파일을 찾아, 파일명과 동일한 이름의 서브 폴더를 만들고 압축을 풉니다.
+    CROW_ROUTE(app, "/pacs/extract").methods(crow::HTTPMethod::POST)
+    ([&](const crow::request& req) {
+        auto x = crow::json::load(req.body);
+        if (!x || !x.has("file_name")) return crow::response(400, "Missing 'file_name'");
+        
+        // url 디코딩 (한글 및 특수문자 지원)
+        std::string file_name = UrlDecode(x["file_name"].s());
+        spdlog::info("[API] Requested zip extraction: {}", file_name);
+
+        // 보안 검증: 상위 폴더(..) 접근 공격 철저히 차단
+        if (file_name.find("..") != std::string::npos) {
+            spdlog::warn("[API] Extraction blocked (Directory Traversal attempt): {}", file_name);
+            return crow::response(400, "Invalid path structure");
+        }
+
+        // 대상 ZIP 파일의 절대 경로 조합
+        fs::path zip_path = fs::path(downloads_dir) / StorageHandler::ToPath(file_name);
+
+        if (!fs::exists(zip_path) || !fs::is_regular_file(zip_path)) {
+            spdlog::warn("[API] Extraction FAILED (File not found): {}", file_name);
+            return crow::response(404, "File not found");
+        }
+
+        // 확장자가 .zip인지 확인
+        std::string ext = zip_path.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+        if (ext != ".zip") {
+            spdlog::warn("[API] Extraction FAILED (Not a zip file): {}", file_name);
+            return crow::response(400, "Target is not a .zip file");
+        }
+
+        // 압축을 풀 대상 폴더 생성 (예: 123.zip -> 123 폴더)
+        // stem()은 확장자를 제외한 순수 파일명만 가져옵니다.
+        fs::path extract_dir = zip_path.parent_path() / zip_path.stem();
+
+        if (!fs::exists(extract_dir)) {
+            fs::create_directories(extract_dir);
+        }
+
+        // 실제 압축 해제 로직 (StorageHandler에 ExtractZip 함수가 있다고 가정)
+        if (StorageHandler::ExtractZip(StorageHandler::PathToStr(zip_path), StorageHandler::PathToStr(extract_dir))) {
+            spdlog::info("[API] Extraction SUCCESS -> Extracted to: {}", StorageHandler::PathToStr(extract_dir));
+            
+            crow::json::wvalue res;
+            res["status"] = "success";
+            res["extract_path"] = StorageHandler::PathToStr(extract_dir);
+            return crow::response(200, res);
+        }
+
+        spdlog::error("[API] Extraction FAILED for: {}", file_name);
+        return crow::response(500, "Extraction Failed");
+    });
+
+
     // =========================================================
     // [Route] 클라이언트 파일 업로드 (POST /file/upload)
     // =========================================================

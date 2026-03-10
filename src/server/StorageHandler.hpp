@@ -152,4 +152,26 @@ public:
             return false;
         }
     }
+
+
+    /**
+     * @brief ZIP 압축 파일을 지정된 폴더에 안전하게 해제합니다. (Zero-Dependency Approach)
+     * * 무거운 외부 압축 라이브러리(zlib, minizip 등)를 서버 빌드에 직접 포함시키는 대신,
+     * Windows 10 이상 운영체제에 기본 내장된 'tar.exe' 유틸리티를 활용하여 
+     * 시스템 콜(System Call) 방식으로 압축을 해제합니다. 이를 통해 서버의 
+     * 실행 파일 크기(Binary Footprint)를 최소화하고 빌드 의존성 및 유지보수성을 극대화했습니다.
+     * 경로에 공백이나 특수문자가 포함된 경우를 대비하여, 명령어 조립 시
+     * 쌍따옴표(\")로 경로를 안전하게 감싸서(Escaping) 실행합니다.
+     * * @param zip_path 압축을 해제할 원본 ZIP 파일의 절대 경로 (예: C:\HiraCache\Downloads\123.zip)
+     * @param dest_dir 압축이 풀린 파일들이 저장될 대상 대상 폴더 경로 (예: C:\HiraCache\Downloads\123)
+     * @return 압축 해제 성공 여부 (시스템 콜 리턴 코드가 0이면 true)
+     */
+    static bool ExtractZip(const std::string& zip_path, const std::string& dest_dir) {
+        // Windows 10/11 기본 내장 tar 명령어를 사용해 압축 해제
+        // 시스템 콜을 사용하므로 경로에 띄어쓰기가 있을 경우를 대비해 따옴표(\")로 감싸줍니다.
+        std::string command = "tar -xf \"" + zip_path + "\" -C \"" + dest_dir + "\"";
+        
+        int result = std::system(command.c_str());
+        return (result == 0); // 성공 시 0 반환
+    }
 };
