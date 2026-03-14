@@ -1,6 +1,6 @@
 # HIRA Helper
 
-**HIRA Helper Agent**는 병원의 레거시 시스템(Delphi OCS/EMR)과 최신 네트워크 스토리지(NAS/PACS), 그리고 외부 API 간의 대용량 파일 송수신을 중계하는 **초경량/고성능 C++ 마이크로 서비스(Middleware)**입니다.
+**HIRA Helper Agent**는 병원의 레거시 시스템(Delphi OCS/EMR)과 최신 네트워크 스토리지(NAS/PACS), 그리고 외부 API 간의 대용량 파일 송수신을 중계하는 초경량/고성능 C++ 마이크로 서비스(Middleware)입니다.
 
 기존 레거시 클라이언트가 처리하기 버거운 대용량 I/O, 압축 해제, 파일 생명주기 관리 등의 무거운 작업을 서버(Agent)로 완벽하게 위임하는 **'Fire-and-Forget'** 아키텍처를 구현했습니다.
 
