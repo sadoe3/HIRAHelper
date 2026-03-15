@@ -1,7 +1,8 @@
 /**
  * @file main.cpp
  * @brief HIRA Helper Agent 서버의 메인 진입점.
- * * Crow 프레임워크를 기반으로 동작하는 RESTful API 서버입니다.
+ *
+ * Crow 프레임워크를 기반으로 동작하는 RESTful API 서버입니다.
  * 이 서버는 로컬 환경과 NAS(PACS) 간의 파일 송수신을 중계하며, 
  * 보안 및 관리의 편의성을 위해 파일 저장소를 2개의 전용 폴더(Downloads, Uploads)로 
  * 엄격하게 분리하여 운영합니다 (Strict 2-Folder Architecture).
@@ -18,7 +19,8 @@
 
 /**
  * @brief URL 인코딩된 문자열을 일반 문자열로 디코딩합니다.
- * * 웹 폼(Form) 전송 시 공백이 '+'로 바뀌거나, 특수문자가 '%XX' 형태로 
+ *
+ * 웹 폼(Form) 전송 시 공백이 '+'로 바뀌거나, 특수문자가 '%XX' 형태로 
  * 인코딩되는 것을 원래의 문자(UTF-8)로 복원합니다.
  * * @param value URL 인코딩된 원본 문자열
  * @return std::string 디코딩된 일반 문자열
@@ -42,9 +44,11 @@ std::string UrlDecode(const std::string& value) {
     return result;
 }
 
-
 /**
- * @brief Crow의 자체 로그를 가로채서 우리의 spdlog 파일에 기록하는 핸들러
+ * @brief Crow의 자체 로그를 가로채서 우리의 spdlog 파일에 기록하는 커스텀 핸들러
+ *
+ * 불필요한 HTTP INFO 접속 로그는 무시하고, Warning 이상의 중요한 내부 에러만
+ * 일별 백그라운드 로그 파일(agent_YYYY-MM-DD.log)에 통합하여 기록합니다.
  */
 class CrowToSpdlogLogger : public crow::ILogHandler {
 public:
@@ -56,7 +60,7 @@ public:
         }
 
         // Crow의 로그 레벨에 따라 spdlog로 토스
-        // Debug와 Info 레벨은 무시함
+        // Debug와 Info 레벨은 무시함 (service_out.log 용량 폭주 방지)
         switch (level) {
             case crow::LogLevel::Warning:
                 spdlog::warn("[Crow] {}", messageToLog);
@@ -71,12 +75,11 @@ public:
     }
 };
 
-
 int main() {
-    // 1. 비동기 로깅 시스템 초기화 (콘솔 및 파일 출력)
+    // 1. 비동기 로깅 시스템 초기화 (일별 파일 출력 전용)
     Logger::Init();
     
-    // 2. Crow 프레임워크의 로그 출력 권한을 뺏어서 spdlog에게 넘김
+    // 2. Crow 프레임워크의 콘솔 출력을 억제하고 spdlog로 핸들링
     static CrowToSpdlogLogger custom_logger;
     crow::logger::setHandler(&custom_logger);
 
@@ -84,11 +87,10 @@ int main() {
     ConfigManager cm;
     spdlog::info("=== HIRA Helper Started ===");
 
-    // 4. 백그라운드 자동 파일 정리(Cleaner) 스레드 시작
+    // 4. 백그라운드 자동 파일 정리(Cleaner) 데몬 스레드 시작
     Cleaner::Start(cm);
 
-    // 5. 전용 캐시 폴더 할당 및 강제 생성
-    // 서버가 관리하는 모든 파일은 이 두 폴더 내에만 존재하도록 격리합니다.
+    // 5. 전용 샌드박스 캐시 폴더 할당 및 강제 생성
     std::string downloads_dir = (fs::path(cm.config.cache_root) / "Downloads").string();
     std::string uploads_dir = (fs::path(cm.config.cache_root) / "Uploads").string();
     fs::create_directories(downloads_dir);
@@ -103,7 +105,7 @@ int main() {
     CROW_ROUTE(app, "/config")([&]() {
         std::string html = CONFIG_HTML;
         
-        // HTML 내의 치환 태그({{TAG}})를 실제 설정값으로 매핑하는 람다 함수
+        // HTML 내의 치환 태그({{TAG}})를 실제 설정값으로 매핑
         auto replace = [&](std::string& str, const std::string& key, const std::string& val) {
             size_t pos = 0;
             while ((pos = str.find(key, pos)) != std::string::npos) {
@@ -126,13 +128,12 @@ int main() {
     // =========================================================
     // [Route] 설정 저장 (POST /config)
     // =========================================================
-    // 웹 폼에서 전송된 application/x-www-form-urlencoded 데이터를 파싱하여 config.json에 저장
+    // 웹 폼에서 전송된 설정 데이터를 파싱하여 config.json에 물리적으로 기록
     CROW_ROUTE(app, "/config").methods(crow::HTTPMethod::POST)([&](const crow::request& req) {
         bool new_cleaner_enabled = false;
         std::stringstream ss(req.body);
         std::string segment;
         
-        // '&' 기준으로 파라미터 분리 후 키-값 파싱
         while (std::getline(ss, segment, '&')) {
             size_t splitPos = segment.find('=');
             if (splitPos != std::string::npos) {
@@ -150,7 +151,7 @@ int main() {
         }
         
         cm.config.cleaner_enabled = new_cleaner_enabled;
-        cm.Save(); // 변경된 설정을 물리 파일에 기록
+        cm.Save(); 
         
         return crow::response(200, "<h1>Saved!</h1><p>Restart required.</p><a href='/config'>Back</a>");
     });
@@ -158,24 +159,22 @@ int main() {
     // =========================================================
     // [Route] NAS 단일 파일 다운로드 (POST /pacs/download)
     // =========================================================
-    // NAS에서 지정된 단일 .dcm 파일을 서버의 Downloads 폴더로 복사합니다.
+    // NAS UNC 경로에서 지정된 파일을 서버의 Downloads 폴더로 고속 복사합니다.
     CROW_ROUTE(app, "/pacs/download").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& req) {
         auto x = crow::json::load(req.body);
         if (!x || !x.has("target_path")) return crow::response(400, "Invalid JSON");
         
-        // url 디코딩 처리를 통해 한국어 관련 문제 해결
-        std::string target = UrlDecode(x["target_path"].s()); // 클라이언트가 요청한 NAS 내부 경로
+        std::string target = UrlDecode(x["target_path"].s()); 
         std::string target_ip, relative_path;
 
-        // 클라이언트가 지정한 하위 폴더 이름 받기 (없으면 빈 문자열)
         std::string sub_dir = "";
         if (x.has("sub_dir")) {
             sub_dir = UrlDecode(x["sub_dir"].s());
         }
         spdlog::info("[API] Requested PACS download: {} (Sub-dir: {})", target, sub_dir.empty() ? "None" : sub_dir);
 
-        // 접두사를 통해 내부 라우팅 보안 처리 (허용되지 않은 경로는 접근 원천 차단)
+        // 보안 접두사(Prefix) 라우팅 검증
         if (target.rfind("PacsShort", 0) == 0) { 
             target_ip = cm.config.nas_short_ip;
             relative_path = target.length() > 9 ? target.substr(10) : ""; 
@@ -189,23 +188,17 @@ int main() {
             return crow::response(400, "Invalid Path Prefix");
         }
 
-        // NAS UNC 경로 조립 (예: \\192.168.0.1\Study01\Image.dcm)
         std::string unc_path = "\\\\" + target_ip + "\\" + relative_path;
 
-        // 다운로드 목적지 폴더 결정 (sub_dir이 있으면 하위 폴더 생성)
         fs::path dest_dir = fs::path(downloads_dir);
         if (!sub_dir.empty()) {
-            // 경로 탐색 공격(..\) 방지를 위해 순수 폴더명만 추출하여 결합
             dest_dir = dest_dir / StorageHandler::ToPath(StorageHandler::PathToStr(fs::path(sub_dir).filename()));
-            
-            // 폴더가 없으면 즉시 생성
             if (!fs::exists(dest_dir)) {
                 fs::create_directories(dest_dir); 
             }
         }
 
         std::string local_path;
-        // 다운로드 실행: 결과물은 항상 Downloads 폴더안으로 들어감
         if (StorageHandler::DownloadSingleFile(unc_path, dest_dir.string(), local_path)) {
             spdlog::info("[API] PACS download SUCCESS -> Saved at: {}", local_path);
             crow::json::wvalue res;
@@ -221,24 +214,19 @@ int main() {
     // =========================================================
     // [Route] Downloads 폴더 단일 파일 삭제 (POST /pacs/delete)
     // =========================================================
-    // HIRA API 첨부파일 및 NAS 다운로드 파일 등 Downloads 폴더에 있는 파일을 삭제합니다.
     CROW_ROUTE(app, "/pacs/delete").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& req) {
         auto x = crow::json::load(req.body);
         if (!x || !x.has("file_name")) return crow::response(400, "Missing 'file_name'");
         
-        // url 디코딩 처리를 통해 한국어 관련 문제 해결
         std::string file_name = UrlDecode(x["file_name"].s());
-
         spdlog::info("[API] Requested deletion in Downloads: {}", file_name);
         
-        // 보안 검증: 경로 탐색(Path Traversal) 시도를 원천 차단
+        // 경로 탐색 공격(Directory Traversal) 차단
         if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
 
-        // ToPath를 씌워서 한글 폴더 결합 시 크래시 방지
         fs::path full_path = fs::path(downloads_dir) / StorageHandler::ToPath(file_name);
 
-        // PathToStr를 씌워서 완전한 UTF-8 문자열로 변환 후 삭제 함수에 전달
         if (StorageHandler::DeleteSingleFile(StorageHandler::PathToStr(full_path))) { 
             spdlog::info("[API] Deletion SUCCESS: {}", file_name);
             crow::json::wvalue res;
@@ -250,27 +238,25 @@ int main() {
         return crow::response(404, "File not found");
     });
 
-
     // =========================================================
     // [Route] Downloads 폴더 내 ZIP 파일 압축 해제 (POST /pacs/extract)
     // =========================================================
-    // Downloads 폴더에 있는 zip 파일을 찾아, 파일명과 동일한 이름의 서브 폴더를 만들고 압축을 풉니다.
+    // 지정된 ZIP 파일의 압축을 해제합니다. 
+    // 압축은 별도의 서브 폴더를 생성하지 않고 ZIP 파일이 위치한 현재 폴더에 그대로 풀립니다.
+    // 해제 완료 후, 해당 폴더 내의 '.dcm' 확장자 파일들의 메타데이터를 반환합니다.
     CROW_ROUTE(app, "/pacs/extract").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& req) {
         auto x = crow::json::load(req.body);
         if (!x || !x.has("file_name")) return crow::response(400, "Missing 'file_name'");
         
-        // url 디코딩 (한글 및 특수문자 지원)
         std::string file_name = UrlDecode(x["file_name"].s());
         spdlog::info("[API] Requested zip extraction: {}", file_name);
 
-        // 보안 검증: 상위 폴더(..) 접근 공격 철저히 차단
         if (file_name.find("..") != std::string::npos) {
             spdlog::warn("[API] Extraction blocked (Directory Traversal attempt): {}", file_name);
             return crow::response(400, "Invalid path structure");
         }
 
-        // 대상 ZIP 파일의 절대 경로 조합
         fs::path zip_path = fs::path(downloads_dir) / StorageHandler::ToPath(file_name);
 
         if (!fs::exists(zip_path) || !fs::is_regular_file(zip_path)) {
@@ -278,7 +264,6 @@ int main() {
             return crow::response(404, "File not found");
         }
 
-        // 확장자가 .zip인지 확인
         std::string ext = zip_path.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
         if (ext != ".zip") {
@@ -286,45 +271,43 @@ int main() {
             return crow::response(400, "Target is not a .zip file");
         }
 
-        // 압축을 풀 대상 폴더 생성 (예: 123.zip -> 123 폴더)
-        // stem()은 확장자를 제외한 순수 파일명만 가져옵니다.
-        fs::path extract_dir = zip_path.parent_path() / zip_path.stem();
+        // 별도의 서브 폴더를 만들지 않고, ZIP 파일이 존재하는 '부모 폴더'를 대상 경로로 지정
+        fs::path extract_dir = zip_path.parent_path();
 
-        if (!fs::exists(extract_dir)) {
-            fs::create_directories(extract_dir);
-        }
-
-        // 실제 압축 해제 로직
+        // 윈도우 내장 tar.exe를 호출하여 압축 해제
         if (StorageHandler::ExtractZip(zip_path, extract_dir)) {
-            spdlog::info("[API] Extraction SUCCESS -> Extracted to: {}", StorageHandler::PathToStr(extract_dir));
+            spdlog::info("[API] Extraction SUCCESS -> Extracted directly to: {}", StorageHandler::PathToStr(extract_dir));
             
-            // 압축 풀린 폴더를 스캔하여 파일 개수와 총 용량 계산
-            int total_files = 0;
-            uintmax_t total_size_bytes = 0;
+            int dcm_files = 0;
+            uintmax_t dcm_size_bytes = 0;
 
+            // 압축이 풀린 폴더를 재귀적으로 스캔하여 '.dcm' 파일의 통계만 집계
             try {
-                // recursive_directory_iterator를 쓰면 하위 폴더 안의 파일까지 싹 다 긁어모읍니다!
                 for (const auto& entry : fs::recursive_directory_iterator(extract_dir)) {
                     if (fs::is_regular_file(entry.status())) {
-                        total_files++;
-                        total_size_bytes += fs::file_size(entry);
+                        std::string entry_ext = entry.path().extension().string();
+                        std::transform(entry_ext.begin(), entry_ext.end(), entry_ext.begin(), ::tolower);
+                        
+                        // C-STORE 전송을 위해 DCM 파일만 카운트
+                        if (entry_ext == ".dcm") {
+                            dcm_files++;
+                            dcm_size_bytes += fs::file_size(entry);
+                        }
                     }
                 }
-                spdlog::info("[API] Extracted content stats: {} files, {} bytes", total_files, total_size_bytes);
+                spdlog::info("[API] DCM content stats: {} files, {} bytes", dcm_files, dcm_size_bytes);
             } catch (const fs::filesystem_error& e) {
-                // 스캔 중 만약 권한 오류 등이 나더라도, 압축 자체는 성공했으므로 경고만 남기고 진행
                 spdlog::warn("[API] Failed to calculate extracted size/count: {}", e.what());
             }
 
-            // Bytes를 MB로 변환 (소수점 둘째 자리까지만 남기기)
-            double total_size_mb = std::round((static_cast<double>(total_size_bytes) / (1024.0 * 1024.0)) * 100.0) / 100.0;
+            // 클라이언트 처리를 용이하게 하기 위해 Bytes를 MB로 변환 (소수점 둘째 자리 반올림)
+            double total_size_mb = std::round((static_cast<double>(dcm_size_bytes) / (1024.0 * 1024.0)) * 100.0) / 100.0;
 
             crow::json::wvalue res;
             res["status"] = "success";
             res["extract_path"] = StorageHandler::PathToStr(extract_dir);  
-            // 클라이언트에게 유용한 메타데이터 추가 전달
-            res["total_files"] = total_files;
-            res["total_size_mb"] = total_size_mb; 
+            res["total_dcm_files"] = dcm_files;
+            res["total_dcm_size_mb"] = total_size_mb; 
             
             return crow::response(200, res);
         }
@@ -333,11 +316,38 @@ int main() {
         return crow::response(500, "Extraction Failed");
     });
 
+    // =========================================================
+    // [Route] 전송 세션별 고유 임시 폴더 생성 (POST /pacs/mkdir)
+    // =========================================================
+    // 클라이언트가 다수의 파일과 ZIP을 모아서 처리하기 전,
+    // 현재 시간(초 단위: YYYYMMDDHHMMSS)을 기반으로 고유 샌드박스 폴더를 할당받습니다.
+    CROW_ROUTE(app, "/pacs/mkdir").methods(crow::HTTPMethod::POST)
+    ([&](const crow::request& /*req*/) {
+        auto now = std::time(nullptr);
+        auto tm = *std::localtime(&now);
+        std::ostringstream ss;
+        ss << std::put_time(&tm, "%Y%m%d%H%M%S"); // 예: 20260315143045
+        std::string unique_folder_name = ss.str();
+
+        fs::path new_dir = fs::path(downloads_dir) / StorageHandler::ToPath(unique_folder_name);
+
+        if (!fs::exists(new_dir)) {
+            fs::create_directories(new_dir);
+        }
+
+        spdlog::info("[API] Created unique session folder: {}", unique_folder_name);
+
+        crow::json::wvalue res;
+        res["status"] = "success";
+        res["folder_name"] = unique_folder_name;               
+        res["full_path"] = StorageHandler::PathToStr(new_dir); 
+        return crow::response(200, res);
+    });
 
     // =========================================================
     // [Route] 클라이언트 파일 업로드 (POST /file/upload)
     // =========================================================
-    // 클라이언트가 보낸 Multipart Form Data를 파싱하여 Uploads 폴더에 저장합니다.
+    // 클라이언트가 보낸 Multipart Form Data를 안전한 원자적 쓰기(Atomic Write)로 Uploads 폴더에 저장합니다.
     CROW_ROUTE(app, "/file/upload").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& req) {
         crow::multipart::message msg(req);
@@ -353,15 +363,12 @@ int main() {
                     if (filename_it != params.end()) {
                         std::string raw_name = filename_it->second;
                         
-                        // 따옴표 제거
                         if (raw_name.size() >= 2 && raw_name.front() == '"' && raw_name.back() == '"') {
                             raw_name = raw_name.substr(1, raw_name.size() - 2);
                         }
                         
-                        // 클라이언트가 URL 인코딩해서 보낸 파일명을 다시 UTF-8 한글로 복원
                         raw_name = UrlDecode(raw_name);
                         
-                        // 이제 raw_name은 완벽한 "한글.jpg"가 되어 StorageHandler로 넘어갑니다.
                         if (StorageHandler::SaveFileAtomic(uploads_dir, raw_name, part.body)) {
                             spdlog::info("[API] File upload SUCCESS: {}", raw_name);
                             saved_count++;
@@ -385,21 +392,17 @@ int main() {
     // =========================================================
     // [Route] 클라이언트 파일 다운로드 (GET /file/download)
     // =========================================================
-    // Downloads 폴더 내에 존재하는 파일을 읽어 클라이언트에게 스트림 형태로 반환합니다.
+    // 서버의 Downloads 폴더 내 특정 파일을 클라이언트 측으로 바이너리 스트리밍합니다.
     CROW_ROUTE(app, "/file/download").methods(crow::HTTPMethod::GET)
     ([&](const crow::request& req) {
         auto name_param = req.url_params.get("file_name"); 
         if (!name_param) return crow::response(400, "Missing 'file_name' parameter");
         
-        // url 디코딩 처리를 통해 한국어 관련 문제 해결
         std::string file_name = UrlDecode(std::string(name_param));
-
         spdlog::info("[API] Requested file download: {}", file_name);
 
-        // 보안 검증: 경로 탐색(Path Traversal) 시도를 원천 차단
         if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
 
-        // 대상 파일의 절대 경로 조합 (무조건 Downloads 폴더 안에서만 탐색)
         fs::path full_path = fs::path(downloads_dir) / StorageHandler::ToPath(file_name);
 
         if (!fs::exists(full_path) || !fs::is_regular_file(full_path)) {
@@ -407,14 +410,12 @@ int main() {
             return crow::response(404, "File not found");
         }
 
-        // 바이너리 읽기 모드로 파일 오픈
         std::ifstream file(full_path, std::ios::binary);
         if (!file.is_open()) {
             spdlog::error("[API] File download FAILED (Open error): {}", file_name);
             return crow::response(500, "File open error");
         }
 
-        // 파일 데이터를 메모리 버퍼에 담음
         std::ostringstream ss;
         ss << file.rdbuf();
         
@@ -423,7 +424,6 @@ int main() {
         res.body = ss.str();
         res.set_header("Content-Type", "application/octet-stream");
         
-        // 한글 파일명이 깨지지 않도록 UTF-8 포맷으로 헤더에 명시
         std::string filename_utf8 = StorageHandler::PathToStr(full_path.filename());
         res.set_header("Content-Disposition", "attachment; filename=\"" + filename_utf8 + "\"");
         
@@ -434,24 +434,18 @@ int main() {
     // =========================================================
     // [Route] Uploads 폴더 단일 파일 삭제 (POST /file/delete)
     // =========================================================
-    // 업로드된 파일을 개별적으로 삭제할 때 사용하는 엔드포인트입니다.
     CROW_ROUTE(app, "/file/delete").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& req) {
         auto x = crow::json::load(req.body);
         if (!x || !x.has("file_name")) return crow::response(400, "Missing 'file_name'");
         
-        // url 디코딩 처리를 통해 한국어 관련 문제 해결
         std::string file_name = UrlDecode(x["file_name"].s());
-        
         spdlog::info("[API] Requested deletion in Uploads: {}", file_name);
 
-        // 보안 검증: 경로 탐색(Path Traversal) 시도를 원천 차단
         if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
 
-        // ToPath를 씌워서 한글 폴더 결합 시 크래시 방지
         fs::path full_path = fs::path(uploads_dir) / StorageHandler::ToPath(file_name);
 
-        // PathToStr를 씌워서 완전한 UTF-8 문자열로 변환 후 삭제 함수에 전달
         if (StorageHandler::DeleteSingleFile(StorageHandler::PathToStr(full_path))) { 
             spdlog::info("[API] Deletion SUCCESS: {}", file_name);
             crow::json::wvalue res;
@@ -463,6 +457,7 @@ int main() {
         return crow::response(404, "File not found");
     });
 
+    // 서버 시작
     spdlog::info("Listening on port {}", cm.config.port);
     app.port(cm.config.port).multithreaded().run();
 }
