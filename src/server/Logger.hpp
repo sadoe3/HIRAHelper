@@ -93,46 +93,33 @@ public:
             // ---------------------------------------------------------
             // 5. Sinks (출력 대상) 설정
             // ---------------------------------------------------------
-            
-            // Sink 1: 일별 파일 저장 (Daily File Sink)
-            // 매일 00시 00분에 새로운 파일로 로테이션 (agent_YYYY-MM-DD.log 등으로 백업됨)
-            // _mt: Multi-thread safe (여러 스레드가 동시에 써도 안전)
-            auto file_sink = std::make_shared<spdlog::sinks::daily_file_sink_mt>(filePath, 0, 0);
-            
-            // Sink 2: 콘솔 출력 (Stdout Color Sink)
-            // 개발 및 디버깅 시 즉시 확인용
-            auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-            
-            // 두 Sink를 벡터로 묶음
-            std::vector<spdlog::sink_ptr> sinks {console_sink, file_sink};
+            // 위에서 계산한 YYYY/MM 경로(filePath) 사용
+            auto file_sink = std::make_shared<spdlog::sinks::daily_file_sink_mt>(filePath, 0, 0);            
 
             // ---------------------------------------------------------
             // 6. Async Logger 생성 및 등록
             // ---------------------------------------------------------
+            // 일반 logger가 아니라 고성능 'async_logger'를 유지
             auto logger = std::make_shared<spdlog::async_logger>(
                 "HiraAgent",                      // 로거 이름
-                sinks.begin(),                    // Sink 목록 시작
-                sinks.end(),                      // Sink 목록 끝
-                spdlog::thread_pool(),            // 위에서 만든 스레드 풀 사용
-                spdlog::async_overflow_policy::block // 큐가 꽉 차면 로그 유실 대신 대기(Block)
+                file_sink,                        // 오직 파일 싱크만 연결!
+                spdlog::thread_pool(),            // 비동기 스레드 풀 사용
+                spdlog::async_overflow_policy::block
             );
 
             // 로그 포맷 설정
-            // 예: [2026-02-10 14:00:00.123] [INFO] [t:1234] 로그메시지
-            // %^...%$ : 로그 레벨에 따른 색상 적용 범위
             logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [t:%t] %v");
             
-            // 로그 레벨 설정 (INFO 이상만 기록)
+            // 로그 레벨 설정 (INFO 등급 '이상' 모두 기록)
             logger->set_level(spdlog::level::info);
             
-            // 에러 발생 시 즉시 파일에 씀 (Flush) - 크래시 나도 에러 로그는 남기기 위함
+            // 에러 발생 시 즉시 파일에 씀 (Flush)
             logger->flush_on(spdlog::level::err); 
             
             // 주기적 Flush 설정 (3초마다)
-            // 비동기 방식이라 즉시 안 써질 수 있으므로, 3초마다 강제 저장하여 데이터 유실 최소화
             spdlog::flush_every(std::chrono::seconds(3));
 
-            // 이 로거를 기본 로거로 등록 (어디서든 spdlog::info()로 사용 가능)
+            // 이 로거를 기본 로거로 등록
             spdlog::set_default_logger(logger);
             
             // ---------------------------------------------------------

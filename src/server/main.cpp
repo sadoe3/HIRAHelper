@@ -8,6 +8,7 @@
  */
 
 #include "crow.h"
+#include "crow\logging.h"
 #include "StorageHandler.hpp"
 #include "ConfigManager.hpp"
 #include "HtmlTemplates.hpp"
@@ -41,18 +42,52 @@ std::string UrlDecode(const std::string& value) {
     return result;
 }
 
+
+/**
+ * @brief Crow의 자체 로그를 가로채서 우리의 spdlog 파일에 기록하는 핸들러
+ */
+class CrowToSpdlogLogger : public crow::ILogHandler {
+public:
+    void log(const std::string& message, crow::LogLevel level) {
+        std::string messageToLog(message);
+        // 메시지 끝에 줄바꿈이 있으면 제거 (spdlog가 알아서 줄바꿈을 해주므로)
+        if (!messageToLog.empty() && messageToLog.back() == '\n') {
+            messageToLog.pop_back();
+        }
+
+        // Crow의 로그 레벨에 따라 spdlog로 토스
+        // Debug와 Info 레벨은 무시함
+        switch (level) {
+            case crow::LogLevel::Warning:
+                spdlog::warn("[Crow] {}", messageToLog);
+                break;
+            case crow::LogLevel::Error:
+                spdlog::error("[Crow] {}", messageToLog);
+                break;
+            case crow::LogLevel::Critical:
+                spdlog::critical("[Crow] {}", messageToLog);
+                break;
+        }
+    }
+};
+
+
 int main() {
     // 1. 비동기 로깅 시스템 초기화 (콘솔 및 파일 출력)
     Logger::Init();
     
-    // 2. 설정 파일(config.json) 로드
-    ConfigManager cm;
-    spdlog::info("=== HIRA Helper Agent Started ===");
+    // 2. Crow 프레임워크의 로그 출력 권한을 뺏어서 spdlog에게 넘김
+    static CrowToSpdlogLogger custom_logger;
+    crow::logger::setHandler(&custom_logger);
 
-    // 3. 백그라운드 자동 파일 정리(Cleaner) 스레드 시작
+    // 3. 설정 파일(config.json) 로드
+    ConfigManager cm;
+    spdlog::info("=== HIRA Helper Started ===");
+
+    // 4. 백그라운드 자동 파일 정리(Cleaner) 스레드 시작
     Cleaner::Start(cm);
 
-    // 4. 전용 캐시 폴더 할당 및 강제 생성
+    // 5. 전용 캐시 폴더 할당 및 강제 생성
     // 서버가 관리하는 모든 파일은 이 두 폴더 내에만 존재하도록 격리합니다.
     std::string downloads_dir = (fs::path(cm.config.cache_root) / "Downloads").string();
     std::string uploads_dir = (fs::path(cm.config.cache_root) / "Uploads").string();
