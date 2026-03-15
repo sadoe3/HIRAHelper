@@ -331,8 +331,14 @@ int main() {
 
         fs::path new_dir = fs::path(downloads_dir) / StorageHandler::ToPath(unique_folder_name);
 
-        if (!fs::exists(new_dir)) {
-            fs::create_directories(new_dir);
+        // 하드디스크 용량 부족이나 권한 에러를 대비한 방어 로직
+        try {
+            if (!fs::exists(new_dir)) {
+                fs::create_directories(new_dir);
+            }
+        } catch (const fs::filesystem_error& e) {
+            spdlog::error("[API] Failed to create session folder: {}", e.what());
+            return crow::response(500, "Directory Creation Failed");
         }
 
         spdlog::info("[API] Created unique session folder: {}", unique_folder_name);
