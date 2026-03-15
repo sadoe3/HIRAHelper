@@ -298,9 +298,34 @@ int main() {
         if (StorageHandler::ExtractZip(zip_path, extract_dir)) {
             spdlog::info("[API] Extraction SUCCESS -> Extracted to: {}", StorageHandler::PathToStr(extract_dir));
             
+            // 압축 풀린 폴더를 스캔하여 파일 개수와 총 용량 계산
+            int total_files = 0;
+            uintmax_t total_size_bytes = 0;
+
+            try {
+                // recursive_directory_iterator를 쓰면 하위 폴더 안의 파일까지 싹 다 긁어모읍니다!
+                for (const auto& entry : fs::recursive_directory_iterator(extract_dir)) {
+                    if (fs::is_regular_file(entry.status())) {
+                        total_files++;
+                        total_size_bytes += fs::file_size(entry);
+                    }
+                }
+                spdlog::info("[API] Extracted content stats: {} files, {} bytes", total_files, total_size_bytes);
+            } catch (const fs::filesystem_error& e) {
+                // 스캔 중 만약 권한 오류 등이 나더라도, 압축 자체는 성공했으므로 경고만 남기고 진행
+                spdlog::warn("[API] Failed to calculate extracted size/count: {}", e.what());
+            }
+
+            // Bytes를 MB로 변환 (소수점 둘째 자리까지만 남기기)
+            double total_size_mb = std::round((static_cast<double>(total_size_bytes) / (1024.0 * 1024.0)) * 100.0) / 100.0;
+
             crow::json::wvalue res;
             res["status"] = "success";
-            res["extract_path"] = StorageHandler::PathToStr(extract_dir);
+            res["extract_path"] = StorageHandler::PathToStr(extract_dir);  
+            // 클라이언트에게 유용한 메타데이터 추가 전달
+            res["total_files"] = total_files;
+            res["total_size_mb"] = total_size_mb; 
+            
             return crow::response(200, res);
         }
 
