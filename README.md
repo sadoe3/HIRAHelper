@@ -9,7 +9,7 @@
 ### 1. Strict 2-Folder Sandbox Architecture
 
 * 모든 파일 입출력은 오직 `Downloads`와 `Uploads` 두 개의 격리된 폴더 내에서만 이루어집니다.
-* 클라이언트는 복잡한 절대 경로를 알 필요 없이 **'순수 파일명'**만으로 서버와 통신하며, 경로 탐색 공격(Directory Traversal)을 원천 차단합니다.
+* 클라이언트는 복잡한 절대 경로를 알 필요 없이 '순수 파일명'만으로 서버와 통신하며, 경로 탐색 공격(Directory Traversal)을 원천 차단합니다.
 
 ### 2. Zero-Dependency Native Zip Extraction
 
