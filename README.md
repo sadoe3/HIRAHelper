@@ -31,7 +31,7 @@
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 * **Server:** C++17, Crow (Microframework), spdlog, C++ `std::filesystem`
 * **Client Interface:** Delphi XE2 (Indy HTTP, JSON, URL Encoding)
@@ -40,16 +40,17 @@
 
 ---
 
-## 📡 API Endpoints
+## API Endpoints
 
 서버는 내부망(`localhost:8080`)에서 동작하며, 모든 응답은 JSON 포맷으로 반환됩니다. 한글 파일명 전송 시 URL Encoding(`UTF-8`)이 필수입니다.
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
 | `POST` | `/pacs/download` | NAS의 단일 DICOM 파일을 `Downloads` 폴더로 고속 캐싱 |
-| `POST` | `/pacs/extract` | `Downloads` 폴더 내의 ZIP 파일 압축 해제 (자동 폴더 생성) |
 | `POST` | `/pacs/delete` | `Downloads` 폴더 내 특정 단일 파일 즉시 삭제 |
-| `POST` | `/file/upload` | 클라이언트의 파일을 `Uploads` 폴더로 안전하게 전송 (Multipart) |
+| `POST` | `/pacs/extract` | ZIP 파일 압축 해제 (현재 폴더) 및 해당 폴더 내 전체 `.dcm` 파일 누적 개수/용량(MB) 반환 |
+| `POST` | `/pacs/mkdir` | 다중 파일(DICOM/ZIP) 처리를 위한 타임스탬프 기반의 고유 전송 세션 폴더 생성 |
+| `POST` | `/file/upload` | 클라이언트의 파일을 `Uploads` 폴더로 안전하게 전송 (Multipart, Atomic Write) |
 | `GET` | `/file/download` | 서버에 캐싱된 파일을 클라이언트로 바이너리 스트리밍 |
 | `POST` | `/file/delete` | `Uploads` 폴더 내 특정 단일 파일 즉시 삭제 |
 | `GET/POST` | `/config` | 웹 브라우저 기반의 서버 설정(Config) 조회 및 수정 인터페이스 |
