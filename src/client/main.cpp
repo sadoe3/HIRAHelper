@@ -1,17 +1,14 @@
 /**
  * @file main.cpp
- * @brief HIRA Helper Agent v3.0 (Strict 2-Folder Architecture) 테스트용 C++ 클라이언트.
+ * @brief HIRA Helper Agent v3.1 (Strict 2-Folder Architecture & One-Shot Zip) 테스트용 C++ 클라이언트.
  *
  * 윈도우 콘솔에서 실행되며, cpr(C++ Requests) 라이브러리를 사용하여 
  * 서버와 HTTPS(REST API) 통신을 수행합니다.
- * * [v3.0 변경사항 적용 내역]
- * - 폴더 단위 제어에서 단일 파일(File Name) 제어로 전면 개편
- * - NAS 다운로드(pacs/download) -> 결과물은 무조건 서버의 Downloads 폴더로 들어감
- * - 파일 업로드(file/upload) -> 결과물은 무조건 서버의 Uploads 폴더로 들어감
- * - 파일 다운로드(file/download) -> 무조건 서버의 Downloads 폴더 안에서 찾아서 가져옴
- * - [신규] Uploads 폴더 전용 삭제 기능 추가
+ * * * [v3.1 변경사항 적용 내역]
+ * - NAS 폴더 원샷 다운로드 테스트 (pacs/download): 폴더 통째로 다운 및 7-Zip 압축 테스트
+ * - NAS ZIP 압축 해제 테스트 (pacs/extract) 신규 메뉴 추가
+ * - URL 인코딩 일관성 패치 (모든 file_name 및 target_path 에 적용)
  */
-
 #include <iostream>
 #include <string>
 #include <fstream>
@@ -86,22 +83,23 @@ std::string UrlEncode(const std::string& value) {
 // =========================================================
 
 /**
- * @brief 1. [NAS -> Downloads] 단일 파일 복사 요청
- * 사용자가 지정한 NAS 원본 경로에서 파일 하나를 찾아 서버의 Downloads 폴더로 복사합니다.
+ * @brief 1. [NAS -> Downloads] NAS 폴더 원샷 다운로드 & 압축 (v3.1)
+ * 사용자가 지정한 NAS 원본 폴더 경로를 넘기면, 서버가 전체 복사 및 7-Zip 압축 후 ZIP 경로를 반환합니다.
  */
 void TestNasDownload() {
     std::string target;
-    std::cout << "\n[Input] Enter NAS File Path (e.g. PacsShort\\Study01\\Image.dcm): ";
+    std::cout << "\n[Input] Enter NAS Folder Path (e.g. PacsShort\\2024\\Study01): ";
     
     std::cin.ignore(); 
     std::getline(std::cin, target);
     target = RemoveQuotes(target);
 
-    // JSON 본문 구성 (v3.0에서도 NAS 경로는 target_path 파라미터 사용)
+    // JSON 본문 구성 (URL 인코딩 처리)
     json body;
     body["target_path"] = UrlEncode(target);
 
-    spdlog::info("Sending NAS Download Request: {}", target);
+    spdlog::info("Sending NAS Folder One-Shot Download Request: {}", target);
+    spdlog::info("Waiting for server to copy and zip... (This may take a while)");
     
     // POST 요청 전송 (서버 사설 인증서 무시를 위해 VerifySsl{false} 옵션 적용)
     auto r = cpr::Post(cpr::Url{AGENT_URL + "/pacs/download"},
@@ -109,7 +107,7 @@ void TestNasDownload() {
                        cpr::Header{{"Content-Type", "application/json"}},
                        cpr::VerifySsl{false});
 
-    // 결과 출력 (성공 시 200과 함께 다운로드된 실제 경로 리턴됨)
+    // 결과 출력 (성공 시 result: true 와 생성된 zip_path 가 리턴됨)
     spdlog::info("Status: {}", r.status_code);
     spdlog::info("Response: {}", r.text);
 }
@@ -120,13 +118,12 @@ void TestNasDownload() {
  */
 void TestDeleteDownloadsFile() {
     std::string filename;
-    std::cout << "\n[Input] Enter File Name in 'Downloads' Folder (e.g. Image.dcm): ";
+    std::cout << "\n[Input] Enter File Name in 'Downloads' Folder (e.g. 20260401123456.zip): ";
     
     std::cin.ignore();
     std::getline(std::cin, filename);
     filename = RemoveQuotes(filename);
 
-    // [v3.0 변경] 파라미터명이 target_path에서 file_name으로 변경됨
     json body;
     body["file_name"] = UrlEncode(filename);
 
@@ -213,7 +210,6 @@ void TestFileDownload() {
     std::string final_path_str = PathToStr(final_save_path);
     spdlog::info("Downloading {} -> {} ...", target_filename, final_path_str);
 
-    // [v3.0 변경] Query 파라미터 이름이 path에서 file_name으로 변경됨
     auto r = cpr::Get(cpr::Url{AGENT_URL + "/file/download"},
                       cpr::Parameters{{"file_name", target_filename}},
                       cpr::VerifySsl{false});
@@ -236,7 +232,7 @@ void TestFileDownload() {
 }
 
 /**
- * @brief 5. [Uploads 폴더] 단일 파일 삭제 (신규)
+ * @brief 5. [Uploads 폴더] 단일 파일 삭제
  * 서버의 Uploads 폴더에 업로드 해두었던 파일을 사용 후 삭제할 때 호출합니다.
  */
 void TestDeleteUploadsFile() {
@@ -248,12 +244,39 @@ void TestDeleteUploadsFile() {
     filename = RemoveQuotes(filename);
 
     json body;
-    body["file_name"] = filename;
+    // [버그 패치] 여기도 일관성 확보를 위해 UrlEncode 적용
+    body["file_name"] = UrlEncode(filename);
 
     spdlog::info("Sending Delete Request for Uploads: {}", filename);
     
-    // 신규 라우팅 경로 /file/delete 호출
     auto r = cpr::Post(cpr::Url{AGENT_URL + "/file/delete"},
+                       cpr::Body{body.dump()},
+                       cpr::Header{{"Content-Type", "application/json"}},
+                       cpr::VerifySsl{false});
+
+    spdlog::info("Status: {}", r.status_code);
+    spdlog::info("Response: {}", r.text);
+}
+
+/**
+ * @brief 6. [Downloads] ZIP 파일 7-Zip 압축 해제 (신규)
+ * 서버의 Downloads 폴더에 존재하는 ZIP 파일명을 보내면, 서버가 이를 초고속 해제하고 DCM 메타데이터를 반환합니다.
+ */
+void TestPacsExtract() {
+    std::string filename;
+    std::cout << "\n[Input] Enter ZIP File Name in 'Downloads' Folder (e.g. 20260401123456.zip): ";
+    
+    std::cin.ignore();
+    std::getline(std::cin, filename);
+    filename = RemoveQuotes(filename);
+
+    json body;
+    body["file_name"] = UrlEncode(filename);
+
+    spdlog::info("Sending 7-Zip Extract Request for: {}", filename);
+    spdlog::info("Waiting for extraction to complete...");
+    
+    auto r = cpr::Post(cpr::Url{AGENT_URL + "/pacs/extract"},
                        cpr::Body{body.dump()},
                        cpr::Header{{"Content-Type", "application/json"}},
                        cpr::VerifySsl{false});
@@ -265,7 +288,6 @@ void TestDeleteUploadsFile() {
 // =========================================================
 // 메인 루프 (Main Loop)
 // =========================================================
-
 int main() {
     // 콘솔 창의 입력 및 출력 코드페이지를 UTF-8(65001)로 강제 설정하여 한글 깨짐을 완벽 방지합니다.
     SetConsoleOutputCP(CP_UTF8);
@@ -275,12 +297,13 @@ int main() {
     spdlog::set_pattern("%^[%L] %v%$");
     
     while(true) {
-        std::cout << "\n=== HIRA Helper Client v3.0 (Strict File Mode) ===\n";
-        std::cout << "1. NAS -> Server (Downloads)\n";
+        std::cout << "\n=== HIRA Helper Client v3.1 (One-Shot Zip Mode) ===\n";
+        std::cout << "1. NAS Folder -> Server Zip (pacs/download)\n";
         std::cout << "2. Delete from Server (Downloads)\n";
         std::cout << "3. Client -> Server (Uploads)\n";
         std::cout << "4. Server -> Client (Downloads)\n";
         std::cout << "5. Delete from Server (Uploads)\n";
+        std::cout << "6. Extract ZIP in Server (pacs/extract) [NEW]\n";
         std::cout << "0. Exit\n";
         std::cout << "Select: ";
         
@@ -297,7 +320,8 @@ int main() {
         if (choice == 2) TestDeleteDownloadsFile();
         if (choice == 3) TestFileUpload();
         if (choice == 4) TestFileDownload();
-        if (choice == 5) TestDeleteUploadsFile(); // 신규 메뉴 연결
+        if (choice == 5) TestDeleteUploadsFile(); 
+        if (choice == 6) TestPacsExtract();       // 신규 메뉴 연결
     }
     return 0;
 }

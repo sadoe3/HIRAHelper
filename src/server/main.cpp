@@ -105,7 +105,6 @@ int main() {
     CROW_ROUTE(app, "/config")([&]() {
         std::string html = CONFIG_HTML;
         
-        // HTML 내의 치환 태그({{TAG}})를 실제 설정값으로 매핑
         auto replace = [&](std::string& str, const std::string& key, const std::string& val) {
             size_t pos = 0;
             while ((pos = str.find(key, pos)) != std::string::npos) {
@@ -157,24 +156,27 @@ int main() {
     });
 
     // =========================================================
-    // [Route] NAS 단일 파일 다운로드 (POST /pacs/download)
+    // [Route] NAS 폴더 원샷 다운로드 및 7-Zip 고속 압축 (POST /pacs/download)
     // =========================================================
-    // NAS UNC 경로에서 지정된 파일을 서버의 Downloads 폴더로 고속 복사합니다.
+    // 클라이언트가 1000개 이상의 개별 파일 다운로드를 1000번 호출하는 병목을 막기 위해,
+    // NAS의 원본 폴더 경로만 던져주면 서버가 [세션 폴더 생성 -> 폴더 전체 복사 -> ZIP 압축 -> 임시 폴더 파기]
+    // 과정을 백그라운드에서 한 번에(One-Shot) 논스톱으로 처리하는 핵심 최적화 API입니다.
     CROW_ROUTE(app, "/pacs/download").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& req) {
         auto x = crow::json::load(req.body);
-        if (!x || !x.has("target_path")) return crow::response(400, "Invalid JSON");
         
+        // JSON 파싱 실패
+        if (!x || !x.has("target_path")) {
+            spdlog::warn("[API] PACS Folder download FAILED: Invalid JSON or missing 'target_path'");
+            return crow::response(400, "Invalid JSON");
+        }
+        
+        // 1. URL 디코딩 및 보안 라우팅 검증 (Prefix)
         std::string target = UrlDecode(x["target_path"].s()); 
         std::string target_ip, relative_path;
 
-        std::string sub_dir = "";
-        if (x.has("sub_dir")) {
-            sub_dir = UrlDecode(x["sub_dir"].s());
-        }
-        spdlog::info("[API] Requested PACS download: {} (Sub-dir: {})", target, sub_dir.empty() ? "None" : sub_dir);
+        spdlog::info("[API] Requested PACS Folder download: {}", target);
 
-        // 보안 접두사(Prefix) 라우팅 검증
         if (target.rfind("PacsShort", 0) == 0) { 
             target_ip = cm.config.nas_short_ip;
             relative_path = target.length() > 9 ? target.substr(10) : ""; 
@@ -184,31 +186,58 @@ int main() {
             relative_path = target.length() > 8 ? target.substr(9) : "";
         }
         else {
-            spdlog::error("[API] PACS download failed (Invalid Prefix): {}", target);
+            spdlog::error("[API] PACS Folder download failed (Invalid Prefix): {}", target);
             return crow::response(400, "Invalid Path Prefix");
         }
 
         std::string unc_path = "\\\\" + target_ip + "\\" + relative_path;
+        fs::path src_dir(unc_path);
 
-        fs::path dest_dir = fs::path(downloads_dir);
-        if (!sub_dir.empty()) {
-            dest_dir = dest_dir / StorageHandler::ToPath(StorageHandler::PathToStr(fs::path(sub_dir).filename()));
-            if (!fs::exists(dest_dir)) {
-                fs::create_directories(dest_dir); 
+        // NAS 원본 폴더 무결성 검증
+        if (!fs::exists(src_dir) || !fs::is_directory(src_dir)) {
+            spdlog::error("[API] Source is not a valid directory: {}", unc_path);
+            return crow::response(404, "Source directory not found");
+        }
+
+        // 2. 고유 세션 ID (YYYYMMDDHHMMSS) 내부 발급
+        auto now = std::time(nullptr);
+        auto tm = *std::localtime(&now);
+        std::ostringstream ss;
+        ss << std::put_time(&tm, "%Y%m%d%H%M%S");
+        std::string session_id = ss.str();
+
+        // 3. 임시 샌드박스 폴더 및 최종 ZIP 파일 저장 경로 맵핑
+        fs::path temp_dir = fs::path(downloads_dir) / StorageHandler::ToPath(session_id); 
+        fs::path final_zip = fs::path(downloads_dir) / StorageHandler::ToPath(session_id + ".zip");
+
+        try {
+            // 4. 세션 폴더 생성 및 NAS 폴더 전체 복사 (Recursive Copy)
+            fs::create_directories(temp_dir);
+            fs::copy(src_dir, temp_dir, fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+            
+            // 5. 복사 완료된 폴더를 7-Zip으로 초고속 압축
+            if (StorageHandler::ZipDirectory(StorageHandler::PathToStr(temp_dir), StorageHandler::PathToStr(final_zip))) {
+                
+                // 6. 가비지 컬렉션 (디스크 용량 확보를 위해 원본 복사본 폴더는 즉시 파기)
+                fs::remove_all(temp_dir);
+                
+                spdlog::info("[API] PACS Download & Zip SUCCESS: {}", StorageHandler::PathToStr(final_zip));
+                
+                // 7. 네트워크 오버헤드를 최소화한 심플한 JSON 응답
+                crow::json::wvalue res;
+                res["result"] = true; 
+                res["zip_path"] = StorageHandler::PathToStr(final_zip); 
+                return crow::response(200, res);
             }
+            
+            // ZIP 압축 실패
+            spdlog::error("[API] PACS Folder download FAILED: API response 500 (Zip Creation Failed)");
+            return crow::response(500, "Zip Creation Failed");
+            
+        } catch (const fs::filesystem_error& e) {
+            spdlog::error("[API] Folder Copy/Zip Exception: {}", e.what());
+            return crow::response(500, "Internal Server Error");
         }
-
-        std::string local_path;
-        if (StorageHandler::DownloadSingleFile(unc_path, dest_dir.string(), local_path)) {
-            spdlog::info("[API] PACS download SUCCESS -> Saved at: {}", local_path);
-            crow::json::wvalue res;
-            res["status"] = "success";
-            res["local_path"] = local_path;
-            return crow::response(200, res);
-        }
-
-        spdlog::error("[API] PACS download FAILED from: {}", unc_path);
-        return crow::response(500, "Download Failed");
     });
 
     // =========================================================
@@ -217,13 +246,21 @@ int main() {
     CROW_ROUTE(app, "/pacs/delete").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& req) {
         auto x = crow::json::load(req.body);
-        if (!x || !x.has("file_name")) return crow::response(400, "Missing 'file_name'");
+        
+        // 파일 이름 부재
+        if (!x || !x.has("file_name")) {
+            spdlog::warn("[API] Deletion in Downloads FAILED: Missing 'file_name'");
+            return crow::response(400, "Missing 'file_name'");
+        }
         
         std::string file_name = UrlDecode(x["file_name"].s());
         spdlog::info("[API] Requested deletion in Downloads: {}", file_name);
         
         // 경로 탐색 공격(Directory Traversal) 차단
-        if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
+        if (!StorageHandler::IsValidFileName(file_name)) {
+            spdlog::warn("[API] Deletion blocked (Directory Traversal attempt): {}", file_name);
+            return crow::response(400, "Invalid file name");
+        }
 
         fs::path full_path = fs::path(downloads_dir) / StorageHandler::ToPath(file_name);
 
@@ -241,13 +278,18 @@ int main() {
     // =========================================================
     // [Route] Downloads 폴더 내 ZIP 파일 압축 해제 (POST /pacs/extract)
     // =========================================================
-    // 지정된 ZIP 파일의 압축을 해제합니다. 
+    // 지정된 ZIP 파일의 압축을 7-Zip을 활용해 초고속으로 해제합니다. 
     // 압축은 별도의 서브 폴더를 생성하지 않고 ZIP 파일이 위치한 현재 폴더에 그대로 풀립니다.
     // 해제 완료 후, 해당 폴더 내의 '.dcm' 확장자 파일들의 메타데이터를 반환합니다.
     CROW_ROUTE(app, "/pacs/extract").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& req) {
         auto x = crow::json::load(req.body);
-        if (!x || !x.has("file_name")) return crow::response(400, "Missing 'file_name'");
+        
+        // 파일 이름 부재
+        if (!x || !x.has("file_name")) {
+            spdlog::warn("[API] Extraction FAILED: Missing 'file_name'");
+            return crow::response(400, "Missing 'file_name'");
+        }
         
         std::string file_name = UrlDecode(x["file_name"].s());
         spdlog::info("[API] Requested zip extraction: {}", file_name);
@@ -274,7 +316,7 @@ int main() {
         // 별도의 서브 폴더를 만들지 않고, ZIP 파일이 존재하는 '부모 폴더'를 대상 경로로 지정
         fs::path extract_dir = zip_path.parent_path();
 
-        // 윈도우 내장 tar.exe를 호출하여 압축 해제
+        // 7-Zip(7za.exe)을 호출하여 초고속 압축 해제
         if (StorageHandler::ExtractZip(zip_path, extract_dir)) {
             spdlog::info("[API] Extraction SUCCESS -> Extracted directly to: {}", StorageHandler::PathToStr(extract_dir));
             
@@ -326,7 +368,7 @@ int main() {
         auto now = std::time(nullptr);
         auto tm = *std::localtime(&now);
         std::ostringstream ss;
-        ss << std::put_time(&tm, "%Y%m%d%H%M%S"); // 예: 20260315143045
+        ss << std::put_time(&tm, "%Y%m%d%H%M%S"); 
         std::string unique_folder_name = ss.str();
 
         fs::path new_dir = fs::path(downloads_dir) / StorageHandler::ToPath(unique_folder_name);
@@ -392,6 +434,9 @@ int main() {
             res["saved_count"] = saved_count;
             return crow::response(200, res);
         }
+        
+        // 잘못된 파일
+        spdlog::warn("[API] File upload FAILED: No valid files found in Multipart Form Data");
         return crow::response(400, "No valid files found");
     });
 
@@ -402,12 +447,20 @@ int main() {
     CROW_ROUTE(app, "/file/download").methods(crow::HTTPMethod::GET)
     ([&](const crow::request& req) {
         auto name_param = req.url_params.get("file_name"); 
-        if (!name_param) return crow::response(400, "Missing 'file_name' parameter");
+        
+        // 파일 이름 부재
+        if (!name_param) {
+            spdlog::warn("[API] File download FAILED: Missing 'file_name' parameter");
+            return crow::response(400, "Missing 'file_name' parameter");
+        }
         
         std::string file_name = UrlDecode(std::string(name_param));
         spdlog::info("[API] Requested file download: {}", file_name);
 
-        if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
+        if (!StorageHandler::IsValidFileName(file_name)) {
+            spdlog::warn("[API] File download blocked (Directory Traversal attempt): {}", file_name);
+            return crow::response(400, "Invalid file name");
+        }
 
         fs::path full_path = fs::path(downloads_dir) / StorageHandler::ToPath(file_name);
 
@@ -443,12 +496,20 @@ int main() {
     CROW_ROUTE(app, "/file/delete").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& req) {
         auto x = crow::json::load(req.body);
-        if (!x || !x.has("file_name")) return crow::response(400, "Missing 'file_name'");
+        
+        // 파일 이름 부재
+        if (!x || !x.has("file_name")) {
+            spdlog::warn("[API] Deletion in Uploads FAILED: Missing 'file_name'");
+            return crow::response(400, "Missing 'file_name'");
+        }
         
         std::string file_name = UrlDecode(x["file_name"].s());
         spdlog::info("[API] Requested deletion in Uploads: {}", file_name);
 
-        if (!StorageHandler::IsValidFileName(file_name)) return crow::response(400, "Invalid file name");
+        if (!StorageHandler::IsValidFileName(file_name)) {
+            spdlog::warn("[API] Deletion blocked (Directory Traversal attempt): {}", file_name);
+            return crow::response(400, "Invalid file name");
+        }
 
         fs::path full_path = fs::path(uploads_dir) / StorageHandler::ToPath(file_name);
 
