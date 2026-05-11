@@ -117,6 +117,7 @@ int main() {
         replace(html, "{{NAS_LONG}}", cm.config.nas_long_ip);
         replace(html, "{{PORT}}", std::to_string(cm.config.port));
         replace(html, "{{CACHE_ROOT}}", cm.config.cache_root);
+        replace(html, "{{INFINITT_UPLOAD_ROOT}}", cm.config.infinitt_upload_root_path); // 신규 SFTP
         replace(html, "{{RETENTION}}", std::to_string(cm.config.retention_days));
         replace(html, "{{INTERVAL}}", std::to_string(cm.config.cleaner_interval_days));
         replace(html, "{{CLEANER_CHECKED}}", cm.config.cleaner_enabled ? "checked" : "");
@@ -143,6 +144,7 @@ int main() {
                 else if (key == "nas_long_ip") cm.config.nas_long_ip = val;
                 else if (key == "port") try { cm.config.port = std::stoi(val); } catch(...) {}
                 else if (key == "cache_root") cm.config.cache_root = val;
+                else if (key == "infinitt_upload_root_path") cm.config.infinitt_upload_root_path = val; // 신규 SFTP
                 else if (key == "retention_days") try { cm.config.retention_days = std::stoi(val); } catch(...) {}
                 else if (key == "cleaner_interval_days") try { cm.config.cleaner_interval_days = std::stoi(val); } catch(...) {}
                 else if (key == "cleaner_enabled") new_cleaner_enabled = true; 
@@ -361,8 +363,7 @@ int main() {
     // =========================================================
     // [Route] 전송 세션별 고유 임시 폴더 생성 (POST /pacs/mkdir)
     // =========================================================
-    // 클라이언트가 다수의 파일과 ZIP을 모아서 처리하기 전,
-    // 현재 시간(초 단위: YYYYMMDDHHMMSS)을 기반으로 고유 샌드박스 폴더를 할당받습니다.
+    // 이제 세션 폴더는 캐시가 아닌 인피니트 업로드 루트(C:\SFTP\ETOP 등)에 생성됩니다.
     CROW_ROUTE(app, "/pacs/mkdir").methods(crow::HTTPMethod::POST)
     ([&](const crow::request& /*req*/) {
         auto now = std::time(nullptr);
@@ -371,19 +372,19 @@ int main() {
         ss << std::put_time(&tm, "%Y%m%d%H%M%S"); 
         std::string unique_folder_name = ss.str();
 
-        fs::path new_dir = fs::path(downloads_dir) / StorageHandler::ToPath(unique_folder_name);
+        // [핵심 변경부] downloads_dir -> cm.config.infinitt_upload_root_path
+        fs::path new_dir = fs::path(cm.config.infinitt_upload_root_path) / StorageHandler::ToPath(unique_folder_name);
 
-        // 하드디스크 용량 부족이나 권한 에러를 대비한 방어 로직
         try {
             if (!fs::exists(new_dir)) {
                 fs::create_directories(new_dir);
             }
         } catch (const fs::filesystem_error& e) {
-            spdlog::error("[API] Failed to create session folder: {}", e.what());
+            spdlog::error("[API] Failed to create session folder in SFTP Root: {}", e.what());
             return crow::response(500, "Directory Creation Failed");
         }
 
-        spdlog::info("[API] Created unique session folder: {}", unique_folder_name);
+        spdlog::info("[API] Created unique session folder for INFINITT: {}", unique_folder_name);
 
         crow::json::wvalue res;
         res["status"] = "success";

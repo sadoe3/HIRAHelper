@@ -39,6 +39,9 @@ struct AppConfig {
     // Windows 경로 구분자(\\) 사용에 유의해야 합니다.
     std::string cache_root = "C:\\Temp\\HiraCache";
 
+    // [신규] 인피니트 EtoP(Upload)용 SFTP 루트 경로
+    std::string infinitt_upload_root_path = "C:\\SFTP\\ETOP";
+
     // [Phase 4] 디스크 관리(Cleaner) 설정
     bool cleaner_enabled = true;      // 자동 디스크 정리 기능 사용 여부 (true: 켜짐)
     int cleaner_interval_days = 1;    // 디스크 정리 작업 실행 주기 (1일마다 수행)
@@ -85,11 +88,13 @@ public:
                 config.port = j.value("port", config.port);
                 config.cache_root = j.value("cache_root", config.cache_root);
 
+                // [신규] SFTP 루트 경로 로드
+                config.infinitt_upload_root_path = j.value("infinitt_upload_root_path", config.infinitt_upload_root_path);
+
                 // [Phase 4] 신규 추가된 디스크 정리 설정 로드
                 config.cleaner_enabled = j.value("cleaner_enabled", true);
                 config.cleaner_interval_days = j.value("cleaner_interval_days", 1);
                 config.retention_days = j.value("retention_days", 30);
-
             } catch (...) {
                 // JSON 문법 오류 등으로 파싱 실패 시, 로그를 남기고 기본값을 사용
                 spdlog::error("Config Load Failed, using defaults");
@@ -111,6 +116,7 @@ public:
         j["nas_long_ip"] = config.nas_long_ip;
         j["port"] = config.port;
         j["cache_root"] = config.cache_root;
+        j["infinitt_upload_root_path"] = config.infinitt_upload_root_path; // SFTP 루트
         j["cleaner_enabled"] = config.cleaner_enabled;
         j["cleaner_interval_days"] = config.cleaner_interval_days;
         j["retention_days"] = config.retention_days;
