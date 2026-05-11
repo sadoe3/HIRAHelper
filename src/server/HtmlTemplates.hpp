@@ -54,6 +54,6 @@ button:hover{background:#005a9e;}
 
     <button type="submit">Save Configuration</button>
 </form>
-<div class="footer">HIRA Helper Solution v3.1</div>
+<div class="footer">HIRA Helper Solution v3.2</div>
 </body></html>
 )";
