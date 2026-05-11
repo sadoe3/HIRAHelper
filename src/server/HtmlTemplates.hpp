@@ -37,6 +37,9 @@ button:hover{background:#005a9e;}
 
         <label>Local Cache Root Path</label>
         <input type="text" name="cache_root" value="{{CACHE_ROOT}}">
+
+        <label>INFINITT SFTP Root Path</label>
+        <input type="text" name="infinitt_upload_root_path" value="{{INFINITT_UPLOAD_ROOT}}">
     </div>
 
     <div class="section">
